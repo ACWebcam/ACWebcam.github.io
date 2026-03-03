@@ -385,7 +385,8 @@ function setupPeerListeners() {
   });
 
   myPeer.on('call', (call) => {
-    call.answer(localStream || undefined);
+    // Vždy odpovíme s platným streamem — umožní obousměrný přenos
+    call.answer(localStream || new MediaStream());
     setupMediaConn(call);
   });
 }
@@ -423,15 +424,9 @@ function setupDataConn(conn, isInitiator) {
         const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
         if (mediaCall) setupMediaConn(mediaCall);
       }
-    } else if (!isInitiator) {
-      // Přijíamáme spojení — druhá strana už volá nás, my musíme zavolat ji
-      if (localStream && localStream.getTracks().length > 0 && !entry.mediaConn) {
-        console.log('[room] Receiver calling initiator with our stream:', peerId);
-        const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
-        if (mediaCall) setupMediaConn(mediaCall);
-      }
     }
-    // isInitiator === true: už jsme zavolali v connectToPeer, neděláme znovu
+    // Žádný reverse call — PeerJS call je obousměrný.
+    // Initiator volá v connectToPeer, receiver odpovídá v myPeer.on('call').
 
     if (isHost) {
       // Pošli novému peerovi seznam ostatních
