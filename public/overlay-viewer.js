@@ -234,8 +234,9 @@ if (!ROOM_ID) {
     myPeer.on('error', function(err) {
       console.error('[overlay] PeerJS error:', err.type, err.message);
       if (err.type === 'peer-unavailable') {
-        // Host ještě neexistuje nebo spadl — zkus znovu za 3s
+        // Host ještě neexistuje nebo spadl — vymaž pending a zkus znovu za 3s
         console.warn('[overlay] Host not found, retrying in 3s...');
+        pendingConns.clear(); // KRITICKY: bez toho retry nikdy neprojde
         setTimeout(function() {
           connectToRoomPeer(getHostId());
         }, 3000);
@@ -261,7 +262,7 @@ if (!ROOM_ID) {
 
     // Příchozí media call (room peer nám posílá svůj stream)
     myPeer.on('call', function(call) {
-      call.answer(); // odpovíme bez streamu (receive only)
+      call.answer(new MediaStream()); // prázdný stream = správné SDP recvonly
       setupOverlayMediaConn(call);
     });
   }
