@@ -301,12 +301,35 @@ function leaveRoom() {
   window.location.href = 'index.html';
 }
 
+// ─── ICE CONFIG (STUN + TURN pro cross-network) ─────
+const ICE_CONFIG = {
+  iceServers: [
+    { urls: 'stun:stun.l.google.com:19302' },
+    { urls: 'stun:stun1.l.google.com:19302' },
+    {
+      urls: 'turn:openrelay.metered.ca:80',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turn:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    },
+    {
+      urls: 'turns:openrelay.metered.ca:443',
+      username: 'openrelayproject',
+      credential: 'openrelayproject'
+    }
+  ]
+};
+
 // ─── PEERJS SIGNALING ────────────────────────────────
 function connectPeerJS() {
   const hostId = getHostId();
 
   // Zkus se zaregistrovat jako host (tvůrce roomky)
-  myPeer = new Peer(hostId, { debug: 0 });
+  myPeer = new Peer(hostId, { debug: 0, config: ICE_CONFIG });
 
   myPeer.on('open', (id) => {
     myId = id;
@@ -320,7 +343,7 @@ function connectPeerJS() {
     if (err.type === 'unavailable-id') {
       // Host ID je už zabraný — jsme joiner
       myPeer.destroy();
-      myPeer = new Peer(undefined, { debug: 0 });
+      myPeer = new Peer(undefined, { debug: 0, config: ICE_CONFIG });
 
       myPeer.on('open', (id) => {
         myId = id;

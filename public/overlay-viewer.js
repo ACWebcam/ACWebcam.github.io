@@ -210,6 +210,28 @@ if (!ROOM_ID) {
 
   function getHostId() { return 'studio-' + ROOM_ID; }
 
+  var OVERLAY_ICE_CONFIG = {
+    iceServers: [
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      {
+        urls: 'turn:openrelay.metered.ca:80',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turn:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      },
+      {
+        urls: 'turns:openrelay.metered.ca:443',
+        username: 'openrelayproject',
+        credential: 'openrelayproject'
+      }
+    ]
+  };
+
   function connectOverlayPeerJS() {
     if (myPeer) {
       try { myPeer.destroy(); } catch(e) {}
@@ -219,7 +241,7 @@ if (!ROOM_ID) {
     pendingConns.clear();
     peerOrder = [];
 
-    myPeer = new Peer(undefined, { debug: 1 });
+    myPeer = new Peer(undefined, { debug: 1, config: OVERLAY_ICE_CONFIG });
 
     myPeer.on('open', function(id) {
       myId = id;
