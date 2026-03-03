@@ -306,18 +306,14 @@ const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun.cloudflare.com:3478' },
     {
-      urls: 'turn:openrelay.metered.ca:80',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turn:openrelay.metered.ca:443',
-      username: 'openrelayproject',
-      credential: 'openrelayproject'
-    },
-    {
-      urls: 'turns:openrelay.metered.ca:443',
+      urls: [
+        'turn:openrelay.metered.ca:80',
+        'turn:openrelay.metered.ca:443',
+        'turn:openrelay.metered.ca:443?transport=tcp',
+        'turns:openrelay.metered.ca:443'
+      ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
     }
@@ -469,6 +465,16 @@ function setupMediaConn(call) {
     setRemoteStream(peerId, remoteStream);
   });
 
+  // ICE state logging — pomáhá diagnostikovat NAT/TURN problémy
+  call.on('iceStateChanged', (state) => {
+    console.log('[ICE] peerId:', peerId, '| state:', state);
+    if (state === 'failed') {
+      showToast('⚠️ ICE failed – problém s NAT traversal (TURN)');
+    } else if (state === 'connected' || state === 'completed') {
+      console.log('[ICE] ✅ Connected to', peerId);
+    }
+  });
+
   call.on('close', () => handlePeerDisconnect(peerId));
   call.on('error', () => {});
 
@@ -492,6 +498,10 @@ function handleData(fromId, data) {
 
     case 'peer-joined':
       setPeerName(data.id, data.name);
+      // Pripój se k novému peerovi i jako non-host (full mesh)
+      if (!peers.has(data.id) && data.id !== myId) {
+        connectToPeer(data.id, data.name);
+      }
       break;
 
     case 'peer-left':
