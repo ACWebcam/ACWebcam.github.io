@@ -7,7 +7,7 @@
 - **WebRTC místnosti** – vytvoř roomku, sdílej link, vysílej kameru/mikrofon/obrazovku
 - **Academy Clash overlay** – esport broadcast overlay s 2 kamerami (1920×1080)
 - **OBS integrace** – `?obs=1` link pro čistý výstup bez UI
-- **Sync filtrů** – úprava jasu/kontrastu/saturace/odstínu z vieweru se přenáší do OBS
+- **Sync filtrů**www
 - **Expirace roomek** – nastavitelná doba platnosti (max 20 dní)
 
 ## Architektura
