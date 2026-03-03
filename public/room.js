@@ -1,5 +1,5 @@
 /* ====================================================
-   WebRTC Studio – room.js
+   WebRTC Studio – room.js  (PeerJS – serverless)
    ==================================================== */
 
 // ─── PARAMS ─────────────────────────────────────────
@@ -8,16 +8,6 @@ const ROOM_ID    = params.get('room') || 'default';
 const MY_NAME    = params.get('name') || localStorage.getItem('webrtc-name') || 'Anon';
 const OBS_MODE   = params.get('obs') === '1';
 const ROOM_EXPIRY = params.get('expiry') ? parseInt(params.get('expiry')) : null;
-
-// ─── KONFIGURACE ICE ────────────────────────────────
-const ICE_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun2.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-  ]
-};
 
 // ─── ROZLIŠENÍ ──────────────────────────────────────
 const RES_MAP = {
@@ -30,19 +20,24 @@ const RES_MAP = {
 };
 
 // ─── STAV ────────────────────────────────────────────
-let ws;
+let myPeer     = null;   // PeerJS instance
 let myId       = null;
-let localStream = null;   // kamera / mikrofon
-let screenStream = null;  // sdílená obrazovka
+let isHost     = false;
+let localStream = null;
+let screenStream = null;
 let isScreenSharing = false;
 
 let audioMuted = false;
 let videoOff   = false;
 
-// peerId -> { pc: RTCPeerConnection, name: string }
+// peerId -> { dataConn, mediaConn }
 const peers = new Map();
-// peerId -> nabídky čekající na localStream
-const pendingOffers = new Map();
+const peerNames = new Map();
+
+// BroadcastChannel pro overlay-sync ve stejném prohlížeči
+const overlayBC = new BroadcastChannel('overlay-sync-' + ROOM_ID);
+
+function getHostId() { return 'studio-' + ROOM_ID; }
 
 // ─── INIT ────────────────────────────────────────────
 async function init() {
@@ -61,11 +56,18 @@ async function init() {
     populateDevices();
   } catch (err) {
     showToast('⚠️ Kamera/mikrofon nedostupné: ' + err.message);
-    localStream = new MediaStream(); // prázdný stream
+    localStream = new MediaStream();
     addLocalTile(localStream);
   }
 
-  connectWS();
+  // Room expiration (client-side)
+  handleRoomExpiry();
+
+  // Start PeerJS
+  connectPeerJS();
+
+  // Zkontroluj overlay peers po připojení (pro případ, že se overlay připojil dřív než jsme měli stream)
+  setTimeout(sendStreamToOverlays, 3000);
 }
 
 // ─── MEDIA ───────────────────────────────────────────
@@ -91,7 +93,6 @@ async function getMedia() {
   try {
     return await navigator.mediaDevices.getUserMedia(getConstraints());
   } catch {
-    // fallback bez konkrétního rozlišení
     return await navigator.mediaDevices.getUserMedia({ video: true, audio: true });
   }
 }
@@ -113,7 +114,6 @@ async function populateDevices() {
       if (d.kind === 'audioinput') micSel.appendChild(opt);
     });
 
-    // Nastav aktuálně používané zařízení
     if (localStream) {
       const vt = localStream.getVideoTracks()[0];
       const at = localStream.getAudioTracks()[0];
@@ -138,7 +138,7 @@ async function applyVideoSettings() {
       await vt.applyConstraints({
         width: { ideal: width }, height: { ideal: height }, frameRate: { ideal: fps }
       });
-      await applyBitrate(false);  // znovu aplikuj bitrate po změně tracku
+      await applyBitrate(false);
       showToast(`✅ ${res} @ ${fps}fps nastaveno`);
     }
   } catch (err) {
@@ -152,18 +152,20 @@ async function applyBitrate(notify = true) {
   const bps  = kbps > 0 ? kbps * 1000 : null;
 
   const promises = [];
-  peers.forEach(({ pc }) => {
+  peers.forEach(({ mediaConn }) => {
+    if (!mediaConn || !mediaConn.peerConnection) return;
+    const pc = mediaConn.peerConnection;
     const sender = pc.getSenders().find(s => s.track?.kind === 'video');
     if (!sender) return;
-    const params = sender.getParameters();
-    if (!params.encodings || params.encodings.length === 0) {
-      params.encodings = [{}];
+    const pars = sender.getParameters();
+    if (!pars.encodings || pars.encodings.length === 0) {
+      pars.encodings = [{}];
     }
-    params.encodings.forEach(enc => {
+    pars.encodings.forEach(enc => {
       if (bps !== null) enc.maxBitrate = bps;
       else delete enc.maxBitrate;
     });
-    promises.push(sender.setParameters(params).catch(() => {}));
+    promises.push(sender.setParameters(pars).catch(() => {}));
   });
 
   await Promise.all(promises);
@@ -179,6 +181,7 @@ async function changeCamera() {
   localStream.getAudioTracks()[0]?.stop();
   newStream.getAudioTracks().forEach(t => localStream.addTrack(t));
   showToast('✅ Kamera přepnuta');
+  sendStreamToOverlays();
 }
 
 async function changeMic() {
@@ -192,26 +195,37 @@ async function changeMic() {
   showToast('✅ Mikrofon přepnut');
 }
 
+// ─── ODESLAT STREAM DO OVERLAY PEERS ─────────────────
+function sendStreamToOverlays() {
+  if (!localStream || localStream.getTracks().length === 0) return;
+  peers.forEach((entry, peerId) => {
+    if (entry.isOverlay && !entry.mediaConn) {
+      console.log('[room] Sending stream to overlay:', peerId);
+      const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+      if (mediaCall) setupMediaConn(mediaCall);
+    }
+  });
+}
+
 // ─── NAHRADIT TRACK VE VŠECH PC ──────────────────────
 async function replaceVideoTrack(newTrack) {
-  // v lokálním streamu
   localStream.getVideoTracks().forEach(t => { localStream.removeTrack(t); t.stop(); });
   if (newTrack) localStream.addTrack(newTrack);
 
-  // v každém peer connection
-  peers.forEach(({ pc }) => {
-    const sender = pc.getSenders().find(s => s.track?.kind === 'video');
+  peers.forEach(({ mediaConn }) => {
+    if (!mediaConn || !mediaConn.peerConnection) return;
+    const sender = mediaConn.peerConnection.getSenders().find(s => s.track?.kind === 'video');
     if (sender && newTrack) sender.replaceTrack(newTrack);
   });
 
-  // aktualizuj lokální video element
   const vid = document.querySelector('#tile-local video');
   if (vid) vid.srcObject = localStream;
 }
 
 async function replaceAudioTrack(newTrack) {
-  peers.forEach(({ pc }) => {
-    const sender = pc.getSenders().find(s => s.track?.kind === 'audio');
+  peers.forEach(({ mediaConn }) => {
+    if (!mediaConn || !mediaConn.peerConnection) return;
+    const sender = mediaConn.peerConnection.getSenders().find(s => s.track?.kind === 'audio');
     if (sender && newTrack) sender.replaceTrack(newTrack);
   });
 }
@@ -241,11 +255,8 @@ function toggleCam() {
 }
 
 async function toggleScreen() {
-  if (isScreenSharing) {
-    stopScreenShare();
-  } else {
-    await startScreenShare();
-  }
+  if (isScreenSharing) stopScreenShare();
+  else await startScreenShare();
 }
 
 async function startScreenShare() {
@@ -253,14 +264,10 @@ async function startScreenShare() {
     screenStream = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
     const screenTrack = screenStream.getVideoTracks()[0];
     isScreenSharing = true;
-
     await replaceVideoTrack(screenTrack);
-
     const tile = document.getElementById('tile-local');
     if (tile) tile.classList.add('screen-share');
-
     document.getElementById('btnScreen').classList.add('active');
-
     screenTrack.onended = () => stopScreenShare();
     showToast('🖥️ Sdílení obrazovky spuštěno');
   } catch (err) {
@@ -272,16 +279,15 @@ async function stopScreenShare() {
   isScreenSharing = false;
   screenStream?.getTracks().forEach(t => t.stop());
   screenStream = null;
-
   try {
     const newStream = await getMedia();
     await replaceVideoTrack(newStream.getVideoTracks()[0]);
-  } catch { /* kamera nedostupná */ }
-
+  } catch {}
   const tile = document.getElementById('tile-local');
   if (tile) tile.classList.remove('screen-share');
   document.getElementById('btnScreen').classList.remove('active');
   showToast('📷 Kamera obnovena');
+  sendStreamToOverlays();
 }
 
 function toggleSettings() {
@@ -290,148 +296,212 @@ function toggleSettings() {
 }
 
 function leaveRoom() {
-  ws?.close();
-  peers.forEach(({ pc }) => pc.close());
-  peers.clear();
+  if (myPeer) myPeer.destroy();
   localStream?.getTracks().forEach(t => t.stop());
   window.location.href = 'index.html';
 }
 
-// ─── WEBSOCKET ───────────────────────────────────────
-function connectWS() {
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-  ws = new WebSocket(`${proto}//${location.host}`);
+// ─── PEERJS SIGNALING ────────────────────────────────
+function connectPeerJS() {
+  const hostId = getHostId();
 
-  ws.onopen = () => {};
+  // Zkus se zaregistrovat jako host (tvůrce roomky)
+  myPeer = new Peer(hostId, { debug: 0 });
 
-  ws.onmessage = async (e) => {
-    const msg = JSON.parse(e.data);
+  myPeer.on('open', (id) => {
+    myId = id;
+    isHost = true;
+    console.log('✅ Room created, I am host:', id);
+    showToast('✅ Místnost vytvořena');
+    setupPeerListeners();
+  });
 
-    switch (msg.type) {
-      case 'id':
-        myId = msg.id;
-        ws.send(JSON.stringify({ type: 'join', room: ROOM_ID, name: MY_NAME, expiry: ROOM_EXPIRY }));
-        break;
+  myPeer.on('error', (err) => {
+    if (err.type === 'unavailable-id') {
+      // Host ID je už zabraný — jsme joiner
+      myPeer.destroy();
+      myPeer = new Peer(undefined, { debug: 0 });
 
-      case 'peers':
-        // Existující peeři – my pošleme offer
-        for (const peer of msg.peers) {
-          await initiatePeer(peer.id, peer.name);
+      myPeer.on('open', (id) => {
+        myId = id;
+        isHost = false;
+        console.log('✅ Joined as peer:', id);
+        setupPeerListeners();
+        connectToPeer(hostId, 'Host');
+      });
+
+      myPeer.on('error', handlePeerError);
+    } else {
+      handlePeerError(err);
+    }
+  });
+}
+
+function handlePeerError(err) {
+  console.error('PeerJS error:', err.type, err.message);
+  if (err.type === 'peer-unavailable') {
+    showToast('⚠️ Místnost neexistuje nebo host odešel');
+  } else if (err.type === 'disconnected' || err.type === 'network') {
+    showToast('⚠️ Spojení ztraceno, obnovuji...');
+    setTimeout(() => { if (myPeer && !myPeer.destroyed) myPeer.reconnect(); }, 2000);
+  }
+}
+
+function setupPeerListeners() {
+  myPeer.on('connection', (conn) => {
+    setupDataConn(conn);
+  });
+
+  myPeer.on('call', (call) => {
+    // Overlay nemá stream — odpověz tím co máme (nebo nic)
+    call.answer(localStream || undefined);
+    setupMediaConn(call);
+  });
+}
+
+function connectToPeer(peerId, name) {
+  if (peers.has(peerId) || peerId === myId) return;
+
+  const dataConn = myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
+  setupDataConn(dataConn);
+
+  if (localStream && localStream.getTracks().length > 0) {
+    const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+    if (mediaCall) setupMediaConn(mediaCall);
+  }
+}
+
+function setupDataConn(conn) {
+  const peerId = conn.peer;
+
+  conn.on('open', () => {
+    const entry = peers.get(peerId) || {};
+    entry.dataConn = conn;
+    entry.isOverlay = false;
+    peers.set(peerId, entry);
+
+    const peerName = conn.metadata?.name || peerNames.get(peerId) || peerId;
+    setPeerName(peerId, peerName);
+
+    // Pokud je to overlay, pošli mu média (overlay sám nevolal)
+    if (peerName === '__overlay__') {
+      console.log('[room] Overlay detected:', peerId);
+      entry.isOverlay = true;
+      if (localStream && localStream.getTracks().length > 0) {
+        if (!entry.mediaConn) {
+          console.log('[room] Calling overlay with media now');
+          const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+          if (mediaCall) setupMediaConn(mediaCall);
         }
-        break;
-
-      case 'peer-joined':
-        // Nový peer se připojil – on pošle offer, my čekáme
-        setPeerName(msg.id, msg.name);
-        break;
-
-      case 'peer-left':
-        removePeer(msg.id);
-        break;
-
-      case 'name-change':
-        setPeerName(msg.id, msg.name);
-        break;
-
-      case 'room-info':
-        startExpiryCountdown(msg.expiresAt);
-        break;
-
-      case 'room-expired':
-        alert('⏰ Platnost místnosti vypršela.');
-        window.location.href = 'index.html';
-        return;
-
-      case 'signal':
-        await handleSignal(msg.from, msg.signal);
-        break;
+      } else {
+        console.log('[room] No local stream yet — will send to overlay when available');
+      }
     }
-  };
 
-  ws.onclose = () => {
-    if (!OBS_MODE) showToast('⚠️ Spojení přerušeno. Obnovuji...');
-    setTimeout(connectWS, 2000);
-  };
+    if (isHost) {
+      // Pošli novému peerovi seznam ostatních
+      const peerList = [];
+      peers.forEach((e, id) => {
+        if (id !== peerId && id !== myId) {
+          peerList.push({ id, name: peerNames.get(id) || id });
+        }
+      });
+      conn.send({ type: 'peers', peers: peerList });
 
-  ws.onerror = (e) => console.error('WS error', e);
+      // Room expiry
+      const stored = localStorage.getItem('room-expiry-' + ROOM_ID);
+      if (stored) conn.send({ type: 'room-info', expiresAt: parseInt(stored) });
+
+      // Oznam ostatním
+      broadcastData({ type: 'peer-joined', id: peerId, name: peerName }, peerId);
+    }
+
+    updatePeerCount();
+  });
+
+  conn.on('data', (data) => handleData(peerId, data));
+  conn.on('close', () => handlePeerDisconnect(peerId));
+  conn.on('error', () => {});
 }
 
-function sendSignal(to, signal) {
-  if (ws?.readyState === WebSocket.OPEN) {
-    ws.send(JSON.stringify({ type: 'signal', to, signal }));
+function setupMediaConn(call) {
+  const peerId = call.peer;
+
+  call.on('stream', (remoteStream) => {
+    const name = call.metadata?.name || peerNames.get(peerId) || peerId;
+    setPeerName(peerId, name);
+    setRemoteStream(peerId, remoteStream);
+  });
+
+  call.on('close', () => handlePeerDisconnect(peerId));
+  call.on('error', () => {});
+
+  const entry = peers.get(peerId) || {};
+  entry.mediaConn = call;
+  peers.set(peerId, entry);
+}
+
+function handleData(fromId, data) {
+  if (!data || !data.type) return;
+
+  switch (data.type) {
+    case 'peers':
+      for (const p of data.peers) {
+        if (!peers.has(p.id) && p.id !== myId) {
+          setPeerName(p.id, p.name);
+          connectToPeer(p.id, p.name);
+        }
+      }
+      break;
+
+    case 'peer-joined':
+      setPeerName(data.id, data.name);
+      break;
+
+    case 'peer-left':
+      removePeer(data.id);
+      break;
+
+    case 'name-change':
+      setPeerName(data.id, data.name);
+      break;
+
+    case 'overlay-sync':
+      overlayBC.postMessage({ cam: data.cam, settings: data.settings });
+      break;
+
+    case 'room-info':
+      startExpiryCountdown(data.expiresAt);
+      break;
+
+    case 'room-expired':
+      alert('⏰ Platnost místnosti vypršela.');
+      window.location.href = 'index.html';
+      break;
   }
 }
 
-// ─── WEBRTC PEER CONNECTION ───────────────────────────
-function createPC(peerId, peerName) {
-  const pc = new RTCPeerConnection(ICE_CONFIG);
-
-  peers.set(peerId, { pc, name: peerName || peerId });
-
-  // Přidej lokální tracky
-  localStream?.getTracks().forEach(t => pc.addTrack(t, localStream));
-
-  pc.onicecandidate = ({ candidate }) => {
-    if (candidate) sendSignal(peerId, { type: 'candidate', candidate });
-  };
-
-  pc.ontrack = ({ streams }) => {
-    if (streams[0]) setRemoteStream(peerId, streams[0]);
-  };
-
-  pc.onconnectionstatechange = () => {
-    if (pc.connectionState === 'failed') {
-      removePeer(peerId);
-    }
-    if (pc.connectionState === 'connected') {
-      applyBitrate(false); // aplikuj nastavený bitrate hned po připojení
-    }
-  };
-
-  return pc;
+function handlePeerDisconnect(peerId) {
+  removePeer(peerId);
+  if (isHost) broadcastData({ type: 'peer-left', id: peerId }, peerId);
 }
 
-async function initiatePeer(peerId, peerName) {
-  if (peers.has(peerId)) return;
-  const pc = createPC(peerId, peerName);
-
-  const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: true });
-  await pc.setLocalDescription(offer);
-  sendSignal(peerId, { type: 'offer', sdp: offer.sdp });
-}
-
-async function handleSignal(fromId, signal) {
-  if (signal.type === 'offer') {
-    if (peers.has(fromId)) peers.get(fromId).pc.close();
-
-    const name = peerNames.get(fromId) || fromId;
-    const pc = createPC(fromId, name);
-
-    await pc.setRemoteDescription({ type: 'offer', sdp: signal.sdp });
-    const answer = await pc.createAnswer();
-    await pc.setLocalDescription(answer);
-    sendSignal(fromId, { type: 'answer', sdp: answer.sdp });
-
-  } else if (signal.type === 'answer') {
-    const peer = peers.get(fromId);
-    if (peer) await peer.pc.setRemoteDescription({ type: 'answer', sdp: signal.sdp });
-
-  } else if (signal.type === 'candidate') {
-    const peer = peers.get(fromId);
-    if (peer) {
-      try {
-        await peer.pc.addIceCandidate(signal.candidate);
-      } catch { /* ignore */ }
+function broadcastData(msg, excludeId) {
+  peers.forEach((entry, id) => {
+    if (id !== excludeId && entry.dataConn && entry.dataConn.open) {
+      try { entry.dataConn.send(msg); } catch {}
     }
-  }
+  });
 }
 
 // ─── DOČASNÁ MAPA JMEN ──────────────────────────────
-const peerNames = new Map();
 function setPeerName(id, name) {
   peerNames.set(id, name);
-  const label = document.querySelector(`#tile-${id} .tile-name`);
-  if (label) label.textContent = name;
+  const el = document.getElementById('tile-' + id);
+  if (el) {
+    const label = el.querySelector('.tile-name');
+    if (label) label.textContent = name;
+  }
 }
 
 // ─── VIDEO TILES ─────────────────────────────────────
@@ -444,9 +514,9 @@ function addLocalTile(stream) {
 }
 
 function setRemoteStream(peerId, stream) {
-  let tile = document.getElementById(`tile-${peerId}`);
+  let tile = document.getElementById('tile-' + peerId);
   if (!tile) {
-    const name = peerNames.get(peerId) || peers.get(peerId)?.name || peerId;
+    const name = peerNames.get(peerId) || peerId;
     tile = createTile(peerId, name, false);
     document.getElementById('videoGrid').appendChild(tile);
     updatePeerCount();
@@ -458,7 +528,7 @@ function setRemoteStream(peerId, stream) {
 function createTile(id, name, isLocal) {
   const tile = document.createElement('div');
   tile.className = 'video-tile' + (isLocal ? ' local' : '');
-  tile.id = `tile-${id}`;
+  tile.id = 'tile-' + id;
 
   const vid = document.createElement('video');
   vid.autoplay = true;
@@ -466,27 +536,31 @@ function createTile(id, name, isLocal) {
   if (isLocal) vid.muted = true;
   tile.appendChild(vid);
 
-  // Popisek
   const label = document.createElement('div');
   label.className = 'tile-label';
-  label.innerHTML = `<span class="dot${audioMuted && isLocal ? ' muted' : ''}"></span>
-                     <span class="tile-name">${escHtml(name)}</span>${isLocal ? ' <span style="opacity:.6">(Ty)</span>' : ''}`;
+  label.innerHTML = '<span class="dot' + (audioMuted && isLocal ? ' muted' : '') + '"></span>' +
+                    '<span class="tile-name">' + escHtml(name) + '</span>' +
+                    (isLocal ? ' <span style="opacity:.6">(Ty)</span>' : '');
   tile.appendChild(label);
 
-  // Avatar (zobrazí se bez videa)
   const noVid = document.createElement('div');
   noVid.className = 'tile-no-video';
   noVid.style.display = 'none';
-  noVid.innerHTML = `<div class="tile-avatar">${getInitial(name)}</div><span>${escHtml(name)}</span>`;
+  noVid.innerHTML = '<div class="tile-avatar">' + getInitial(name) + '</div><span>' + escHtml(name) + '</span>';
   tile.appendChild(noVid);
 
   return tile;
 }
 
 function removePeer(peerId) {
-  const peer = peers.get(peerId);
-  if (peer) { peer.pc.close(); peers.delete(peerId); }
-  document.getElementById(`tile-${peerId}`)?.remove();
+  const entry = peers.get(peerId);
+  if (entry) {
+    if (entry.mediaConn) try { entry.mediaConn.close(); } catch {}
+    if (entry.dataConn)  try { entry.dataConn.close(); }  catch {}
+    peers.delete(peerId);
+  }
+  const tile = document.getElementById('tile-' + peerId);
+  if (tile) tile.remove();
   peerNames.delete(peerId);
   updatePeerCount();
 }
@@ -499,7 +573,6 @@ function updateLocalDot() {
 function updatePeerCount() {
   const count = document.querySelectorAll('.video-tile').length;
   document.getElementById('peerCountEl').textContent = count;
-  // Uprav grid layout
   const grid = document.getElementById('videoGrid');
   if (count === 1) grid.style.gridTemplateColumns = '1fr';
   else if (count === 2) grid.style.gridTemplateColumns = 'repeat(2, 1fr)';
@@ -509,10 +582,10 @@ function updatePeerCount() {
 
 // ─── SDÍLENÍ ODKAZŮ ──────────────────────────────────
 function getRoomLink() {
-  return `${location.origin}/room.html?room=${ROOM_ID}`;
+  return location.origin + location.pathname.replace(/[^/]*$/, '') + 'room.html?room=' + ROOM_ID;
 }
 function getObsLink() {
-  return `${location.origin}/overlay.html?room=${ROOM_ID}&obs=1`;
+  return location.origin + location.pathname.replace(/[^/]*$/, '') + 'overlay.html?room=' + ROOM_ID + '&obs=1';
 }
 
 function copyRoomLink() {
@@ -520,10 +593,37 @@ function copyRoomLink() {
     .then(() => showToast('✅ Odkaz zkopírován!'))
     .catch(() => showToast('⚠️ Kopírování selhalo'));
 }
+function copyRoomCode() {
+  navigator.clipboard.writeText(ROOM_ID)
+    .then(() => showToast('✅ Kód místnosti zkopírován: ' + ROOM_ID))
+    .catch(() => showToast('⚠️ Kopírování selhalo'));
+}
 function copyObsLink() {
   navigator.clipboard.writeText(getObsLink())
     .then(() => showToast('✅ OBS odkaz zkopírován!'))
     .catch(() => showToast('⚠️ Kopírování selhalo'));
+}
+
+// ─── ROOM EXPIRY (Client-side) ──────────────────────
+function handleRoomExpiry() {
+  if (ROOM_EXPIRY) {
+    const existing = localStorage.getItem('room-expiry-' + ROOM_ID);
+    if (!existing) {
+      const expiresAt = Date.now() + ROOM_EXPIRY * 60 * 1000;
+      localStorage.setItem('room-expiry-' + ROOM_ID, String(expiresAt));
+    }
+  }
+  const expiresAt = localStorage.getItem('room-expiry-' + ROOM_ID);
+  if (expiresAt) {
+    const ts = parseInt(expiresAt);
+    if (ts <= Date.now()) {
+      alert('⏰ Platnost místnosti vypršela.');
+      localStorage.removeItem('room-expiry-' + ROOM_ID);
+      window.location.href = 'index.html';
+      return;
+    }
+    startExpiryCountdown(ts);
+  }
 }
 
 // ─── TOAST ───────────────────────────────────────────
@@ -559,6 +659,9 @@ function startExpiryCountdown(expiresAt) {
       el.textContent = 'Vypršelo';
       wrap.style.color = '#ff4444';
       clearInterval(expiryInterval);
+      alert('⏰ Platnost místnosti vypršela.');
+      localStorage.removeItem('room-expiry-' + ROOM_ID);
+      window.location.href = 'index.html';
       return;
     }
     const d = Math.floor(diff / 86400000);
@@ -572,12 +675,7 @@ function startExpiryCountdown(expiresAt) {
     text += m + 'm ' + s + 's';
     el.textContent = text.trim();
 
-    // Change color when < 1 hour remaining
-    if (diff < 3600000) {
-      wrap.style.color = '#ff8844';
-    } else {
-      wrap.style.color = '';
-    }
+    wrap.style.color = diff < 3600000 ? '#ff8844' : '';
   }
 
   tick();

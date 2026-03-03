@@ -5,8 +5,20 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Academy Clash &#8211; Overlay</title>
   <link rel="stylesheet" href="overlay.css" />
-  <!-- Okamžitě přidá obs-mode třídu ještě před vykreslením DOM -->
-  <script>if(new URLSearchParams(location.search).get('obs')==='1')document.documentElement.classList.add('obs-mode');</script>
+  <!-- Okamžitě přidá obs-mode třídu ještě před vykreslením DOM + skryje UI elementy -->
+  <script>
+    (function(){
+      var isObs = new URLSearchParams(location.search).get('obs') === '1';
+      if (isObs) {
+        document.documentElement.classList.add('obs-mode');
+        // Inject style to hide viewer elements before they render
+        var s = document.createElement('style');
+        s.textContent = '#viewer-bar,#gear-btn,#color-panel{display:none!important}';
+        document.head.appendChild(s);
+      }
+    })();
+  </script>
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
 <div class="scene" id="scene">

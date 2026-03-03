@@ -1,26 +1,18 @@
 /* ============================================================
    overlay-viewer.js – Academy Clash Overlay logic
-   WebRTC viewer + filtr kamer + sync do OBS přes WebSocket
+   PeerJS viewer + filtr kamer + sync přes BroadcastChannel
    ============================================================ */
 
 const PARAMS   = new URLSearchParams(window.location.search);
 const ROOM_ID  = PARAMS.get('room');
 const OBS_MODE = PARAMS.get('obs') === '1';
 
-const ICE_CONFIG = {
-  iceServers: [
-    { urls: 'stun:stun.l.google.com:19302' },
-    { urls: 'stun:stun1.l.google.com:19302' },
-    { urls: 'stun:stun.cloudflare.com:3478' }
-  ]
-};
-
 // ── SCENE SCALE ─────────────────────────────────────────────
 function scaleScene() {
-  const scene = document.getElementById('scene');
-  const scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
-  const ox = (window.innerWidth  - 1920 * scale) / 2;
-  const oy = (window.innerHeight - 1080 * scale) / 2;
+  var scene = document.getElementById('scene');
+  var scale = Math.min(window.innerWidth / 1920, window.innerHeight / 1080);
+  var ox = (window.innerWidth  - 1920 * scale) / 2;
+  var oy = (window.innerHeight - 1080 * scale) / 2;
   scene.style.transform = 'translate(' + ox + 'px, ' + oy + 'px) scale(' + scale + ')';
 }
 scaleScene();
@@ -30,42 +22,46 @@ if (OBS_MODE) document.documentElement.classList.add('obs-mode');
 
 // ── COLOR PANEL ─────────────────────────────────────────────
 function toggleColorPanel() {
-  const panel = document.getElementById('color-panel');
-  const btn   = document.getElementById('gear-btn');
+  var panel = document.getElementById('color-panel');
+  var btn   = document.getElementById('gear-btn');
   if (!panel) return;
-  const isOpen = panel.style.display === 'flex';
+  var isOpen = panel.style.display === 'flex';
   panel.style.display = isOpen ? 'none' : 'flex';
   btn.classList.toggle('open', !isOpen);
 }
 
+// BroadcastChannel pro sync filtrů (stejný prohlížeč)
+var overlayBC = ROOM_ID ? new BroadcastChannel('overlay-sync-' + ROOM_ID) : null;
+
 /**
  * Přečte hodnoty sliderů, aplikuje CSS filtr na video
- * a pokud je otevřené WS spojení pošle stav ostatním tabům (OBS).
+ * a broadcastuje stav přes BroadcastChannel (do OBS tabu).
  */
 function updateFilter(n, broadcast) {
-  const vid = document.getElementById('cam-video-' + n);
+  var vid = document.getElementById('cam-video-' + n);
   if (!vid) return;
 
-  const br  = document.getElementById('c' + n + '-brightness').value;
-  const co  = document.getElementById('c' + n + '-contrast').value;
-  const sa  = document.getElementById('c' + n + '-saturate').value;
-  const hu  = document.getElementById('c' + n + '-hue').value;
-  const mir = document.getElementById('c' + n + '-mirror').checked;
+  var br  = document.getElementById('c' + n + '-brightness').value;
+  var co  = document.getElementById('c' + n + '-contrast').value;
+  var sa  = document.getElementById('c' + n + '-saturate').value;
+  var hu  = document.getElementById('c' + n + '-hue').value;
+  var mir = document.getElementById('c' + n + '-mirror').checked;
 
   document.getElementById('c' + n + '-brightness-val').textContent = br + '%';
   document.getElementById('c' + n + '-contrast-val').textContent   = co + '%';
   document.getElementById('c' + n + '-saturate-val').textContent   = sa + '%';
   document.getElementById('c' + n + '-hue-val').textContent        = hu + '°';
 
-  applyFilterToVideo(vid, { br, co, sa, hu, mir });
+  applyFilterToVideo(vid, { br: br, co: co, sa: sa, hu: hu, mir: mir });
 
-  // Pošli stav ostatním tabům (OBS) – broadcast=true jen při manuálním posunu
-  if (broadcast !== false && ws && ws.readyState === WebSocket.OPEN && ROOM_ID) {
-    ws.send(JSON.stringify({
-      type: 'overlay-sync',
-      cam: n,
-      settings: { br, co, sa, hu, mir }
-    }));
+  // Broadcast přes BroadcastChannel (do OBS a dalších tabů)
+  if (broadcast !== false && overlayBC) {
+    overlayBC.postMessage({ cam: n, settings: { br: br, co: co, sa: sa, hu: hu, mir: mir } });
+  }
+
+  // Taky pošli přes PeerJS data channels (pro cross-browser sync)
+  if (broadcast !== false && typeof broadcastDataOverlay === 'function') {
+    broadcastDataOverlay({ type: 'overlay-sync', cam: n, settings: { br: br, co: co, sa: sa, hu: hu, mir: mir } });
   }
 }
 
@@ -76,31 +72,45 @@ function applyFilterToVideo(vid, s) {
   vid.style.setProperty('transform', s.mir ? 'scaleX(-1)' : 'scaleX(1)', 'important');
 }
 
-/** Aplikuje přijatý stav filtru z jiného tabu (OBS příjem) */
+/** Aplikuje přijatý stav filtru z jiného tabu */
 function applyRemoteFilter(cam, s) {
-  // Nastav slidery vizuálně (pro případ že OBS tab má taky panel)
-  ['brightness', 'contrast', 'saturate'].forEach(k => {
-    const el = document.getElementById('c' + cam + '-' + k);
-    if (el) el.value = s[k] || 100;
-  });
-  const hueEl    = document.getElementById('c' + cam + '-hue');
-  const mirrorEl = document.getElementById('c' + cam + '-mirror');
-  if (hueEl)    hueEl.value      = s.hu || 0;
-  if (mirrorEl) mirrorEl.checked = s.mir !== false;
+  var br  = s.br  != null ? s.br  : 100;
+  var co  = s.co  != null ? s.co  : 100;
+  var sa  = s.sa  != null ? s.sa  : 100;
+  var hu  = s.hu  != null ? s.hu  : 0;
+  var mir = s.mir !== false;
 
-  // Aplikuj na video
-  const vid = document.getElementById('cam-video-' + cam);
-  if (vid) applyFilterToVideo(vid, { br: s.br||100, co: s.co||100, sa: s.sa||100, hu: s.hu||0, mir: s.mir!==false });
+  var elBr = document.getElementById('c' + cam + '-brightness');
+  var elCo = document.getElementById('c' + cam + '-contrast');
+  var elSa = document.getElementById('c' + cam + '-saturate');
+  var elHu = document.getElementById('c' + cam + '-hue');
+  var elMi = document.getElementById('c' + cam + '-mirror');
+  if (elBr) elBr.value   = br;
+  if (elCo) elCo.value   = co;
+  if (elSa) elSa.value   = sa;
+  if (elHu) elHu.value   = hu;
+  if (elMi) elMi.checked = mir;
 
-  // Aktualizuj popisy
-  const bv = document.getElementById('c' + cam + '-brightness-val');
-  const cv = document.getElementById('c' + cam + '-contrast-val');
-  const sv = document.getElementById('c' + cam + '-saturate-val');
-  const hv = document.getElementById('c' + cam + '-hue-val');
-  if (bv) bv.textContent = (s.br||100) + '%';
-  if (cv) cv.textContent = (s.co||100) + '%';
-  if (sv) sv.textContent = (s.sa||100) + '%';
-  if (hv) hv.textContent = (s.hu||0)   + '°';
+  var vid = document.getElementById('cam-video-' + cam);
+  if (vid) applyFilterToVideo(vid, { br: br, co: co, sa: sa, hu: hu, mir: mir });
+
+  var bv = document.getElementById('c' + cam + '-brightness-val');
+  var cv = document.getElementById('c' + cam + '-contrast-val');
+  var sv = document.getElementById('c' + cam + '-saturate-val');
+  var hv = document.getElementById('c' + cam + '-hue-val');
+  if (bv) bv.textContent = br + '%';
+  if (cv) cv.textContent = co + '%';
+  if (sv) sv.textContent = sa + '%';
+  if (hv) hv.textContent = hu + '°';
+}
+
+// Přijímej filtr sync z BroadcastChannel
+if (overlayBC) {
+  overlayBC.onmessage = function(e) {
+    if (e.data && e.data.cam != null && e.data.settings) {
+      applyRemoteFilter(e.data.cam, e.data.settings);
+    }
+  };
 }
 
 function resetCam(n) {
@@ -109,10 +119,10 @@ function resetCam(n) {
   document.getElementById('c' + n + '-saturate').value   = 100;
   document.getElementById('c' + n + '-hue').value        = 0;
   document.getElementById('c' + n + '-mirror').checked   = true;
-  updateFilter(n);  // broadcast reset taky
+  updateFilter(n);
 }
 
-// Inicializuj výchozí filtry po načtení stránky
+// Inicializuj výchozí filtry
 document.addEventListener('DOMContentLoaded', function () {
   updateFilter(1, false);
   updateFilter(2, false);
@@ -120,21 +130,21 @@ document.addEventListener('DOMContentLoaded', function () {
 
 // ── SWAP CAMS ────────────────────────────────────────────────
 function swapCams() {
-  const v1 = document.getElementById('cam-video-1');
-  const v2 = document.getElementById('cam-video-2');
-  const src1 = v1.srcObject;
-  const src2 = v2.srcObject;
-  const act1 = v1.classList.contains('active');
-  const act2 = v2.classList.contains('active');
+  var v1 = document.getElementById('cam-video-1');
+  var v2 = document.getElementById('cam-video-2');
+  var src1 = v1.srcObject;
+  var src2 = v2.srcObject;
+  var act1 = v1.classList.contains('active');
+  var act2 = v2.classList.contains('active');
 
   v1.srcObject = src2;
   v2.srcObject = src1;
   v1.classList.toggle('active', act2);
   v2.classList.toggle('active', act1);
 
-  const ph1 = document.getElementById('placeholder-1');
-  const ph2 = document.getElementById('placeholder-2');
-  const ph1vis = ph1 ? ph1.style.display : '';
+  var ph1 = document.getElementById('placeholder-1');
+  var ph2 = document.getElementById('placeholder-2');
+  var ph1vis = ph1 ? ph1.style.display : '';
   if (ph1) ph1.style.display = ph2 ? ph2.style.display : '';
   if (ph2) ph2.style.display = ph1vis;
 
@@ -143,13 +153,14 @@ function swapCams() {
   }
 }
 
-// ── WEBRTC VIEWER ────────────────────────────────────────────
+// ── PEERJS VIEWER ────────────────────────────────────────────
 if (!ROOM_ID) {
   console.warn('Overlay: žádný ?room= parametr – streamy se nezobrazí.');
 } else {
-  var ws;
-  var myId;
-  var peers     = new Map();
+  var myPeer    = null;
+  var myId      = null;
+  var ovPeers   = new Map();   // peerId -> { mediaConn, dataConn }
+  var pendingConns = new Set(); // peerId's with pending connections
   var peerOrder = [];
   var slots     = [1, 2];
 
@@ -159,9 +170,10 @@ if (!ROOM_ID) {
   }
 
   function assignStream(peerId, stream) {
+    console.log('[overlay] assignStream called for', peerId, 'tracks:', stream.getTracks().length);
     if (!peerOrder.includes(peerId)) {
       if (peerOrder.length < slots.length) peerOrder.push(peerId);
-      else return;
+      else { console.warn('[overlay] No free slot for', peerId); return; }
     }
     var slot = getSlot(peerId);
     if (!slot) return;
@@ -170,6 +182,9 @@ if (!ROOM_ID) {
     vid.srcObject = stream;
     vid.classList.add('active');
     if (ph) ph.style.display = 'none';
+    // Explicitní play pro jistotu
+    vid.play().catch(function(e) { console.warn('[overlay] Play error cam', slot, e); });
+    console.log('[overlay] Stream assigned to slot', slot);
   }
 
   function freeSlot(peerId) {
@@ -184,110 +199,174 @@ if (!ROOM_ID) {
     if (ph) ph.style.display = '';
   }
 
-  function makePCCallbacks(peerId, pc) {
-    pc.onicecandidate = function(e) {
-      if (e.candidate) ws.send(JSON.stringify({ type: 'signal', to: peerId, signal: { type: 'candidate', candidate: e.candidate } }));
-    };
-    pc.ontrack = function(e) {
-      if (e.streams[0]) assignStream(peerId, e.streams[0]);
-    };
-    pc.onconnectionstatechange = function() {
-      if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') {
-        freeSlot(peerId);
-        peers.delete(peerId);
+  // Broadcast data z overlay do room peers
+  function broadcastDataOverlay(msg) {
+    ovPeers.forEach(function(entry, id) {
+      if (entry.dataConn && entry.dataConn.open) {
+        try { entry.dataConn.send(msg); } catch(e) {}
       }
-    };
+    });
   }
 
-  function createPC(peerId) {
-    var pc = new RTCPeerConnection(ICE_CONFIG);
-    peers.set(peerId, pc);
-    pc.addTransceiver('video', { direction: 'recvonly' });
-    pc.addTransceiver('audio', { direction: 'recvonly' });
-    makePCCallbacks(peerId, pc);
-    return pc;
+  function getHostId() { return 'studio-' + ROOM_ID; }
+
+  function connectOverlayPeerJS() {
+    if (myPeer) {
+      try { myPeer.destroy(); } catch(e) {}
+      myPeer = null;
+    }
+    ovPeers.clear();
+    pendingConns.clear();
+    peerOrder = [];
+
+    myPeer = new Peer(undefined, { debug: 1 });
+
+    myPeer.on('open', function(id) {
+      myId = id;
+      console.log('[overlay] Connected as', id);
+      setupOverlayListeners();
+      // Počkej chvíli a pak se připoj k hostovi (ať se stihne registrovat)
+      setTimeout(function() {
+        connectToRoomPeer(getHostId());
+      }, 500);
+    });
+
+    myPeer.on('error', function(err) {
+      console.error('[overlay] PeerJS error:', err.type, err.message);
+      if (err.type === 'peer-unavailable') {
+        // Host ještě neexistuje nebo spadl — zkus znovu za 3s
+        console.warn('[overlay] Host not found, retrying in 3s...');
+        setTimeout(function() {
+          connectToRoomPeer(getHostId());
+        }, 3000);
+      } else if (err.type === 'disconnected' || err.type === 'network' || err.type === 'server-error') {
+        console.warn('[overlay] Connection lost, full reconnect in 3s...');
+        setTimeout(connectOverlayPeerJS, 3000);
+      }
+    });
+
+    myPeer.on('disconnected', function() {
+      console.warn('[overlay] Disconnected from signaling, reconnecting...');
+      if (myPeer && !myPeer.destroyed) {
+        myPeer.reconnect();
+      }
+    });
   }
 
-  function createAnswerPC(peerId) {
-    var pc = new RTCPeerConnection(ICE_CONFIG);
-    peers.set(peerId, pc);
-    makePCCallbacks(peerId, pc);
-    return pc;
+  function setupOverlayListeners() {
+    // Příchozí data connection (od room peerů)
+    myPeer.on('connection', function(conn) {
+      setupOverlayDataConn(conn);
+    });
+
+    // Příchozí media call (room peer nám posílá svůj stream)
+    myPeer.on('call', function(call) {
+      call.answer(); // odpovíme bez streamu (receive only)
+      setupOverlayMediaConn(call);
+    });
   }
 
-  function connectWS() {
-    var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
-    ws = new WebSocket(proto + '//' + location.host);
+  function connectToRoomPeer(peerId) {
+    if (ovPeers.has(peerId) || pendingConns.has(peerId) || peerId === myId) return;
+    pendingConns.add(peerId);
+    console.log('[overlay] Connecting data to room peer:', peerId);
 
-    ws.onopen = function() {};
+    // Data connection
+    var dataConn = myPeer.connect(peerId, { reliable: true, metadata: { name: '__overlay__' } });
+    setupOverlayDataConn(dataConn);
 
-    ws.onmessage = async function(e) {
-      var msg = JSON.parse(e.data);
+    // Nepotřebujeme call (nemáme stream) — room peer nám zavolá
+  }
 
-      switch (msg.type) {
-        case 'id':
-          myId = msg.id;
-          ws.send(JSON.stringify({ type: 'join', room: ROOM_ID, name: '__overlay__' }));
-          break;
+  function setupOverlayDataConn(conn) {
+    var peerId = conn.peer;
 
-        case 'peers':
-          for (var i = 0; i < msg.peers.length; i++) {
-            var peer = msg.peers[i];
-            if (peer.name === '__overlay__') continue;
-            var pc = createPC(peer.id);
-            var offer = await pc.createOffer();
-            await pc.setLocalDescription(offer);
-            ws.send(JSON.stringify({ type: 'signal', to: peer.id, signal: { type: 'offer', sdp: offer.sdp } }));
+    conn.on('open', function() {
+      console.log('[overlay] Data conn OPEN with', peerId);
+      pendingConns.delete(peerId);
+      var entry = ovPeers.get(peerId) || {};
+      entry.dataConn = conn;
+      ovPeers.set(peerId, entry);
+    });
+
+    conn.on('data', function(data) {
+      console.log('[overlay] Data from', peerId, ':', data.type || data);
+      handleOverlayData(peerId, data);
+    });
+
+    conn.on('close', function() {
+      console.log('[overlay] Data conn CLOSED with', peerId);
+      pendingConns.delete(peerId);
+      freeSlot(peerId);
+      ovPeers.delete(peerId);
+    });
+
+    conn.on('error', function(err) {
+      console.error('[overlay] Data conn error with', peerId, err);
+      pendingConns.delete(peerId);
+    });
+  }
+
+  function setupOverlayMediaConn(call) {
+    var peerId = call.peer;
+    console.log('[overlay] Media call setup from', peerId);
+
+    call.on('stream', function(remoteStream) {
+      console.log('[overlay] GOT STREAM from', peerId, 'tracks:', remoteStream.getTracks().length);
+      assignStream(peerId, remoteStream);
+    });
+
+    call.on('close', function() {
+      console.log('[overlay] Media call CLOSED from', peerId);
+      freeSlot(peerId);
+    });
+
+    call.on('error', function(err) {
+      console.error('[overlay] Media call error from', peerId, err);
+    });
+
+    var entry = ovPeers.get(peerId) || {};
+    entry.mediaConn = call;
+    ovPeers.set(peerId, entry);
+  }
+
+  function handleOverlayData(fromId, data) {
+    if (!data || !data.type) return;
+
+    switch (data.type) {
+      case 'peers':
+        // Host dal seznam peerů v roomce — připoj se ke každému
+        for (var i = 0; i < data.peers.length; i++) {
+          var p = data.peers[i];
+          if (!ovPeers.has(p.id) && p.id !== myId) {
+            connectToRoomPeer(p.id);
           }
-          break;
-
-        case 'peer-joined':
-          if (msg.name !== '__overlay__' && !peers.has(msg.id)) {
-            var pc2 = createPC(msg.id);
-            pc2.createOffer().then(function(offer) {
-              pc2.setLocalDescription(offer);
-              ws.send(JSON.stringify({ type: 'signal', to: msg.id, signal: { type: 'offer', sdp: offer.sdp } }));
-            }).catch(function() {});
-          }
-          break;
-
-        case 'peer-left':
-          freeSlot(msg.id);
-          if (peers.get(msg.id)) peers.get(msg.id).close();
-          peers.delete(msg.id);
-          break;
-
-        case 'overlay-sync':
-          // Přijat filtr z jiného tabu (vieweru) – aplikuj lokálně
-          applyRemoteFilter(msg.cam, msg.settings);
-          break;
-
-        case 'signal': {
-          var from   = msg.from;
-          var signal = msg.signal;
-
-          if (signal.type === 'offer') {
-            if (peers.has(from)) { peers.get(from).close(); peers.delete(from); }
-            var answerPC = createAnswerPC(from);
-            await answerPC.setRemoteDescription({ type: 'offer', sdp: signal.sdp });
-            var answer = await answerPC.createAnswer();
-            await answerPC.setLocalDescription(answer);
-            ws.send(JSON.stringify({ type: 'signal', to: from, signal: { type: 'answer', sdp: answer.sdp } }));
-          } else if (signal.type === 'answer') {
-            var p = peers.get(from);
-            if (p) await p.setRemoteDescription({ type: 'answer', sdp: signal.sdp });
-          } else if (signal.type === 'candidate') {
-            var pc3 = peers.get(from);
-            if (pc3) try { await pc3.addIceCandidate(signal.candidate); } catch(err) {}
-          }
-          break;
         }
-      }
-    };
+        break;
 
-    ws.onclose = function() { setTimeout(connectWS, 2000); };
-    ws.onerror = function(e) { console.error('WS overlay error', e); };
+      case 'peer-joined':
+        // Nový peer v roomce — připoj se k němu
+        if (data.id && !ovPeers.has(data.id) && data.id !== myId) {
+          connectToRoomPeer(data.id);
+        }
+        break;
+
+      case 'peer-left':
+        freeSlot(data.id);
+        var entry = ovPeers.get(data.id);
+        if (entry) {
+          if (entry.mediaConn) try { entry.mediaConn.close(); } catch(e) {}
+          if (entry.dataConn) try { entry.dataConn.close(); } catch(e) {}
+          ovPeers.delete(data.id);
+        }
+        break;
+
+      case 'overlay-sync':
+        applyRemoteFilter(data.cam, data.settings);
+        break;
+    }
   }
 
-  connectWS();
+  // Start
+  connectOverlayPeerJS();
 }

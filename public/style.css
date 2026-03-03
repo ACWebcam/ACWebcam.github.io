@@ -241,10 +241,19 @@ label {
 .room-id-badge {
   font-size: 13px;
   color: var(--text-muted);
+  padding: 6px 14px;
+  border-radius: 8px;
+  background: rgba(255,255,255,0.06);
+  border: 1px solid rgba(255,255,255,0.1);
+  transition: background 0.15s;
+}
+.room-id-badge:hover {
+  background: rgba(255,255,255,0.1);
 }
 .room-id-badge strong {
-  color: var(--text);
-  font-weight: 600;
+  color: #a78bfa;
+  font-weight: 700;
+  font-family: 'Consolas', 'Monaco', monospace;
 }
 .room-header-right {
   display: flex;

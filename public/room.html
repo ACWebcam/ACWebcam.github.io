@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>WebRTC Studio – Místnost</title>
   <link rel="stylesheet" href="style.css" />
+  <script src="https://unpkg.com/peerjs@1.5.4/dist/peerjs.min.js"></script>
 </head>
 <body>
 
@@ -16,8 +17,9 @@
     <div class="room-header">
       <div class="room-header-left">
         <div class="room-logo-sm">📡</div>
-        <div class="room-id-badge">
-          Místnost: <strong id="displayRoomId">...</strong>
+        <div class="room-id-badge" id="roomIdBadge" onclick="copyRoomCode()" title="Klikni pro zkopírování kódu" style="cursor:pointer">
+          Kód: <strong id="displayRoomId" style="font-size:16px;letter-spacing:0.15em;user-select:all">...</strong>
+          <span style="font-size:11px;opacity:0.5;margin-left:6px">📋</span>
         </div>
       </div>
       <div class="room-header-right">
