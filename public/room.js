@@ -341,7 +341,7 @@ function connectPeerJS() {
 
   myPeer.on('error', (err) => {
     if (err.type === 'unavailable-id') {
-      // Host ID je už zabraný — jsme joiner
+      // Host ID je zabraný — zkusíme se připojit jako joiner
       myPeer.destroy();
       myPeer = new Peer(undefined, { debug: 0, config: ICE_CONFIG });
 
@@ -353,7 +353,20 @@ function connectPeerJS() {
         connectToPeer(hostId, 'Host');
       });
 
-      myPeer.on('error', handlePeerError);
+      myPeer.on('error', (err2) => {
+        if (err2.type === 'peer-unavailable') {
+          // Host ID je stale/mrtvý (PeerJS cloud si ho drží ale nikdo tam není)
+          // → počkej a zkus znovu převzít host roli
+          console.warn('Host ID stale, retrying as host in 3s...');
+          showToast('⏳ Připojování k místnosti...');
+          setTimeout(() => {
+            if (myPeer && !myPeer.destroyed) myPeer.destroy();
+            connectPeerJS();
+          }, 3000);
+        } else {
+          handlePeerError(err2);
+        }
+      });
     } else {
       handlePeerError(err);
     }
