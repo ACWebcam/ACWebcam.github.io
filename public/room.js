@@ -381,11 +381,10 @@ function handlePeerError(err) {
 
 function setupPeerListeners() {
   myPeer.on('connection', (conn) => {
-    setupDataConn(conn);
+    setupDataConn(conn, false); // přijíamáme spojení — musíme zavolat zpět
   });
 
   myPeer.on('call', (call) => {
-    // Overlay nemá stream — odpověz tím co máme (nebo nic)
     call.answer(localStream || undefined);
     setupMediaConn(call);
   });
@@ -395,7 +394,7 @@ function connectToPeer(peerId, name) {
   if (peers.has(peerId) || peerId === myId) return;
 
   const dataConn = myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
-  setupDataConn(dataConn);
+  setupDataConn(dataConn, true); // my jsme iniciátor — volaccí strana
 
   if (localStream && localStream.getTracks().length > 0) {
     const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
@@ -403,7 +402,7 @@ function connectToPeer(peerId, name) {
   }
 }
 
-function setupDataConn(conn) {
+function setupDataConn(conn, isInitiator) {
   const peerId = conn.peer;
 
   conn.on('open', () => {
@@ -415,29 +414,24 @@ function setupDataConn(conn) {
     const peerName = conn.metadata?.name || peerNames.get(peerId) || peerId;
     setPeerName(peerId, peerName);
 
-    // Pokud je to overlay, pošli mu média (overlay sám nevolal)
     if (peerName === '__overlay__') {
+      // Overlay: vždy voláme my (overlay sám stream nemá)
       console.log('[room] Overlay detected:', peerId);
       entry.isOverlay = true;
-      if (localStream && localStream.getTracks().length > 0) {
-        if (!entry.mediaConn) {
-          console.log('[room] Calling overlay with media now');
-          const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
-          if (mediaCall) setupMediaConn(mediaCall);
-        }
-      } else {
-        console.log('[room] No local stream yet — will send to overlay when available');
+      if (localStream && localStream.getTracks().length > 0 && !entry.mediaConn) {
+        console.log('[room] Calling overlay with media now');
+        const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+        if (mediaCall) setupMediaConn(mediaCall);
       }
-    } else {
-      // Normální peer — pošli mu taky náš stream (jinak nás nevidí)
-      if (localStream && localStream.getTracks().length > 0) {
-        if (!entry.mediaConn) {
-          console.log('[room] Calling peer with our stream:', peerId);
-          const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
-          if (mediaCall) setupMediaConn(mediaCall);
-        }
+    } else if (!isInitiator) {
+      // Přijíamáme spojení — druhá strana už volá nás, my musíme zavolat ji
+      if (localStream && localStream.getTracks().length > 0 && !entry.mediaConn) {
+        console.log('[room] Receiver calling initiator with our stream:', peerId);
+        const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+        if (mediaCall) setupMediaConn(mediaCall);
       }
     }
+    // isInitiator === true: už jsme zavolali v connectToPeer, neděláme znovu
 
     if (isHost) {
       // Pošli novému peerovi seznam ostatních
