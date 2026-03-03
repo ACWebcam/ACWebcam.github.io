@@ -428,6 +428,15 @@ function setupDataConn(conn) {
       } else {
         console.log('[room] No local stream yet — will send to overlay when available');
       }
+    } else {
+      // Normální peer — pošli mu taky náš stream (jinak nás nevidí)
+      if (localStream && localStream.getTracks().length > 0) {
+        if (!entry.mediaConn) {
+          console.log('[room] Calling peer with our stream:', peerId);
+          const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+          if (mediaCall) setupMediaConn(mediaCall);
+        }
+      }
     }
 
     if (isHost) {
