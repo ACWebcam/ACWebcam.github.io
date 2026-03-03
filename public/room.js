@@ -500,11 +500,8 @@ function handleData(fromId, data) {
       break;
 
     case 'peer-joined':
+      // Jen zaregistruj jméno — nový peer se k nám připojí sám (přes peers list)
       setPeerName(data.id, data.name);
-      // Pripój se k novému peerovi i jako non-host (full mesh)
-      if (!peers.has(data.id) && data.id !== myId) {
-        connectToPeer(data.id, data.name);
-      }
       break;
 
     case 'peer-left':
