@@ -306,7 +306,11 @@ const ICE_CONFIG = {
   iceServers: [
     { urls: 'stun:stun.l.google.com:19302' },
     { urls: 'stun:stun1.l.google.com:19302' },
+    { urls: 'stun:stun2.l.google.com:19302' },
+    { urls: 'stun:stun3.l.google.com:19302' },
     { urls: 'stun:stun.cloudflare.com:3478' },
+    { urls: 'stun:stun.stunprotocol.org:3478' },
+    // openrelay is a free public TURN relay — use multiple endpoints for redundancy
     {
       urls: [
         'turn:openrelay.metered.ca:80',
@@ -316,8 +320,18 @@ const ICE_CONFIG = {
       ],
       username: 'openrelayproject',
       credential: 'openrelayproject'
+    },
+    // Backup public TURN (freeturn.net)
+    {
+      urls: [
+        'turn:freeturn.net:3478',
+        'turns:freeturn.net:5349'
+      ],
+      username: 'free',
+      credential: 'free'
     }
-  ]
+  ],
+  iceCandidatePoolSize: 10
 };
 
 // ─── PEERJS SIGNALING ────────────────────────────────
@@ -463,22 +477,71 @@ function setupMediaConn(call) {
     setRemoteStream(peerId, remoteStream);
   });
 
-  // ICE state logging — pomáhá diagnostikovat NAT/TURN problémy
+  // ICE state logging + restart-on-disconnect
   call.on('iceStateChanged', (state) => {
     console.log('[ICE] peerId:', peerId, '| state:', state);
-    if (state === 'failed') {
-      showToast('⚠️ ICE failed – problém s NAT traversal (TURN)');
+
+    if (state === 'disconnected') {
+      // ICE blip – try an in-place restart before giving up
+      console.log('[ICE] Disconnected, scheduling restart for', peerId);
+      setTimeout(() => {
+        const entry = peers.get(peerId);
+        // Only restart if this call is still the active one
+        if (entry && entry.mediaConn === call) {
+          const pc = call.peerConnection;
+          if (pc && pc.signalingState !== 'closed' && pc.iceConnectionState !== 'connected') {
+            console.log('[ICE] Restarting ICE for', peerId);
+            pc.restartIce();
+          }
+        }
+      }, 2500);
+    } else if (state === 'failed') {
+      showToast('⚠️ ICE failed – zkouším znovu spojení...');
+      console.warn('[ICE] Failed for', peerId, '– renegotiating');
+      setTimeout(() => {
+        const entry = peers.get(peerId);
+        if (entry && entry.mediaConn === call) reconnectMedia(peerId);
+      }, 3000);
     } else if (state === 'connected' || state === 'completed') {
       console.log('[ICE] ✅ Connected to', peerId);
     }
   });
 
-  call.on('close', () => handlePeerDisconnect(peerId));
+  // Guard: only remove the peer if THIS call is still the active media connection.
+  // Old duplicate/stale calls (from cached browser code) must not kill valid peers.
+  call.on('close', () => {
+    const entry = peers.get(peerId);
+    if (entry && entry.mediaConn === call) {
+      handlePeerDisconnect(peerId);
+    } else {
+      console.log('[room] Ignoring close of stale/duplicate call for', peerId);
+    }
+  });
   call.on('error', () => {});
 
   const entry = peers.get(peerId) || {};
   entry.mediaConn = call;
   peers.set(peerId, entry);
+}
+
+// Re-initiate the media call for a peer whose ICE fully failed
+function reconnectMedia(peerId) {
+  if (!localStream || localStream.getTracks().length === 0) return;
+  const entry = peers.get(peerId);
+  if (!entry) return;
+
+  // Close the failed connection
+  if (entry.mediaConn) {
+    try { entry.mediaConn.close(); } catch {}
+    entry.mediaConn = null;
+  }
+
+  // Only the lexicographically larger ID initiates to avoid both sides calling each other
+  if (myId > peerId) {
+    console.log('[room] Reconnecting media to', peerId);
+    const mediaCall = myPeer.call(peerId, localStream, { metadata: { name: MY_NAME } });
+    if (mediaCall) setupMediaConn(mediaCall);
+  }
 }
 
 function handleData(fromId, data) {

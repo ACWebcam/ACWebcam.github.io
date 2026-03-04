@@ -7,6 +7,16 @@ const app = express();
 const server = http.createServer(app);
 const wss = new WebSocket.Server({ server });
 
+// Prevent browsers from caching JS/HTML so old code can never survive a deploy
+app.use((req, res, next) => {
+  if (/\.(js|html)$/.test(req.path)) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public')));
 
 // roomId -> Map(clientId -> { ws, name })
