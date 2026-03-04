@@ -15,11 +15,16 @@ export function setupPeerListeners() {
 // ─── CONNECT TO PEER ─────────────────────────────────
 export function connectToPeer(peerId, name) {
   if (peers.has(peerId) || peerId === state.myId) return;
-  console.log('[room] connectToPeer →', peerId, '| stream tracks:', state.localStream?.getTracks().length ?? 'no stream');
+  const myTracks = state.localStream?.getTracks().length ?? 0;
+  console.log('[room] connectToPeer →', peerId, '| my stream tracks:', myTracks);
   const dataConn = state.myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
   setupDataConn(dataConn, true);
-  const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
-  if (call) setupMediaConn(call);
+  // Only call if we have real tracks — otherwise wait for the other side to call us.
+  // This avoids a race where an empty-stream call from us clobbers their real-stream call.
+  if (myTracks > 0) {
+    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+    if (call) setupMediaConn(call);
+  }
 }
 
 // ─── OVERLAYS ────────────────────────────────────────
@@ -75,10 +80,11 @@ export function setupDataConn(conn, isInitiator) {
     } else {
       // Create a placeholder tile immediately so the peer appears even before media arrives
       setRemoteStream(peerId, new MediaStream());
-      // Proactively call — both sides call each other, stale-call guard ensures only one survives
-      if (!entry.mediaConn) {
+      // Only proactively call if we have real tracks.
+      // If we have no camera, wait — the peer (who has video) will call us.
+      if (!entry.mediaConn && (state.localStream?.getTracks().length ?? 0) > 0) {
         console.log('[room] Proactively calling peer with media:', peerId);
-        const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
+        const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
         if (call) setupMediaConn(call);
       }
     }

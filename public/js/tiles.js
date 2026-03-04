@@ -1,18 +1,47 @@
 import { state, peers, peerNames } from './state.js';
 import { escHtml, getInitial } from './utils.js';
 
+// Show/hide the no-video overlay based on whether the stream has active video tracks.
+// Also watches for future tracks being added/removed.
+function syncNoVideo(tile, stream) {
+  const noVid = tile.querySelector('.tile-no-video');
+  if (!noVid) return;
+
+  function update() {
+    const hasVideo = stream.getVideoTracks().some(t => t.enabled && t.readyState !== 'ended');
+    noVid.style.display = hasVideo ? 'none' : 'flex';
+  }
+
+  update();
+  stream.addEventListener('addtrack',    update);
+  stream.addEventListener('removetrack', update);
+  // Also react to track mute/unmute (e.g. remote disables camera)
+  stream.getVideoTracks().forEach(t => {
+    t.addEventListener('mute',   update);
+    t.addEventListener('unmute', update);
+    t.addEventListener('ended',  update);
+  });
+}
+
 export function setPeerName(id, name) {
   peerNames.set(id, name);
   const el = document.getElementById('tile-' + id);
   if (el) {
     const label = el.querySelector('.tile-name');
     if (label) label.textContent = name;
+    // Update avatar letter in case name just arrived
+    const avatar = el.querySelector('.tile-avatar');
+    if (avatar) avatar.textContent = getInitial(name);
+    const noVidName = el.querySelector('.tile-no-video span');
+    if (noVidName) noVidName.textContent = name;
   }
 }
 
 export function addLocalTile(stream, name) {
   const tile = createTile('local', name, true);
-  tile.querySelector('video').srcObject = stream;
+  const vid = tile.querySelector('video');
+  vid.srcObject = stream;
+  syncNoVideo(tile, stream);
   document.getElementById('videoGrid').prepend(tile);
   updatePeerCount();
 }
@@ -25,6 +54,7 @@ export function setRemoteStream(peerId, stream) {
     updatePeerCount();
   }
   tile.querySelector('video').srcObject = stream;
+  syncNoVideo(tile, stream);
 }
 
 export function createTile(id, name, isLocal) {
