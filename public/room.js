@@ -1,3 +1,12 @@
+/* =====================================================
+   DEPRECATED — tento soubor se již nepoužívá.
+   Logika byla rozdělena do modulárních souborů v js/:
+     js/config.js, js/state.js, js/utils.js,
+     js/tiles.js, js/expiry.js, js/peers.js,
+     js/media.js, js/signaling.js, js/ui.js, js/main.js
+   room.html nyní načítá:  <script type="module" src="js/main.js">
+   ===================================================== */
+
 /* ====================================================
    WebRTC Studio – room.js  (PeerJS – serverless)
    ==================================================== */
@@ -37,6 +46,13 @@ const peerNames = new Map();
 // BroadcastChannel pro overlay-sync ve stejném prohlížeči
 const overlayBC = new BroadcastChannel('overlay-sync-' + ROOM_ID);
 
+// ─── SECRET / LIMITED ROOMS ──────────────────────────
+// Přidej sem libovolné místnosti s limitem účastníků (bez overlay).
+// maxPeers = celkový počet lidí včetně hosta.
+const ROOM_LIMITS = {
+  'ACOBS26': { maxPeers: 4 }
+};
+
 function getHostId() { return 'studio-' + ROOM_ID; }
 
 // ─── INIT ────────────────────────────────────────────
@@ -62,6 +78,9 @@ async function init() {
 
   // Room expiration (client-side)
   handleRoomExpiry();
+
+  // Připoj se na signaling server (host-claim registry)
+  connectSignalingServer();
 
   // Start PeerJS
   connectPeerJS();
@@ -334,6 +353,80 @@ const ICE_CONFIG = {
   iceCandidatePoolSize: 10
 };
 
+// ─── SIGNALING SERVER (host-claim registry) ─────────────────
+// WebSocket spojeni se serverem — používáme POUZE pro registraci hosta.
+// Zajišťuje že daný kód může mít vždy jen jednu aktivní roomku.
+let sigWS = null;
+let sigWSReady = false;
+const sigQueue = [];
+
+function connectSignalingServer() {
+  const wsUrl = location.origin.replace(/^https?/, loc => loc === 'https' ? 'wss' : 'ws');
+  sigWS = new WebSocket(wsUrl);
+
+  sigWS.addEventListener('open', () => {
+    sigWSReady = true;
+    // Odeslat frontu zprav
+    while (sigQueue.length) sigWS.send(sigQueue.shift());
+  });
+
+  sigWS.addEventListener('message', (ev) => {
+    let msg;
+    try { msg = JSON.parse(ev.data); } catch { return; }
+
+    if (msg.type === 'host-claimed') {
+      // Server potvrdil vlastnictví kódu — inicializujeme host režim
+      console.log('[room] ✅ Host claim potvrzen serverem pro:', msg.room);
+      isHost = true;
+      showToast('✅ Místnost vytvořena');
+      setupPeerListeners();
+    }
+
+    if (msg.type === 'room-taken') {
+      // Stejný kód je už aktivně obsazen jinou sessionou — připoj se jako běžný peer
+      console.warn('[room] ⛔ Room code je obsazen jiným hostem, připojuji jako peer...');
+      showToast('⏳ Připojování k existující místnosti...');
+      if (myPeer && !myPeer.destroyed) myPeer.destroy();
+      joinAsRegularPeer();
+    }
+  });
+
+  sigWS.addEventListener('error', () => {}); // chyby ignorujeme — PeerJS funguje samostatně
+}
+
+function sigSend(msg) {
+  const str = JSON.stringify(msg);
+  if (sigWSReady && sigWS.readyState === WebSocket.OPEN) {
+    sigWS.send(str);
+  } else {
+    sigQueue.push(str);
+  }
+}
+
+function joinAsRegularPeer() {
+  const hostId = getHostId();
+  myPeer = new Peer(undefined, { debug: 0, config: ICE_CONFIG });
+  myPeer.on('open', (id) => {
+    myId = id;
+    isHost = false;
+    console.log('✅ Joined as peer:', id);
+    setupPeerListeners();
+    connectToPeer(hostId, 'Host');
+  });
+  myPeer.on('error', (err) => {
+    if (err.type === 'peer-unavailable') {
+      console.warn('Host not found, retrying in 3s...');
+      showToast('⏳ Připojování k místnosti...');
+      setTimeout(() => {
+        if (myPeer && !myPeer.destroyed) myPeer.destroy();
+        connectPeerJS();
+      }, 3000);
+    } else {
+      handlePeerError(err);
+    }
+  });
+}
+
 // ─── PEERJS SIGNALING ────────────────────────────────
 function connectPeerJS() {
   const hostId = getHostId();
@@ -343,40 +436,17 @@ function connectPeerJS() {
 
   myPeer.on('open', (id) => {
     myId = id;
-    isHost = true;
-    console.log('✅ Room created, I am host:', id);
-    showToast('✅ Místnost vytvořena');
-    setupPeerListeners();
+    console.log('[room] PeerJS host ID acquired:', id, '| claiming on server...');
+    // Nejprv zregistruj na serveru — server potvrdí 'host-claimed' nebo pošle 'room-taken'
+    sigSend({ type: 'claim-host', room: ROOM_ID });
+    // isHost a setupPeerListeners() se volá až po host-claimed zprávě ze serveru
   });
 
   myPeer.on('error', (err) => {
     if (err.type === 'unavailable-id') {
-      // Host ID je zabraný — zkusíme se připojit jako joiner
+      // Host ID je zabratný v PeerJS — připoj se jako joiner
       myPeer.destroy();
-      myPeer = new Peer(undefined, { debug: 0, config: ICE_CONFIG });
-
-      myPeer.on('open', (id) => {
-        myId = id;
-        isHost = false;
-        console.log('✅ Joined as peer:', id);
-        setupPeerListeners();
-        connectToPeer(hostId, 'Host');
-      });
-
-      myPeer.on('error', (err2) => {
-        if (err2.type === 'peer-unavailable') {
-          // Host ID je stale/mrtvý (PeerJS cloud si ho drží ale nikdo tam není)
-          // → počkej a zkus znovu převzít host roli
-          console.warn('Host ID stale, retrying as host in 3s...');
-          showToast('⏳ Připojování k místnosti...');
-          setTimeout(() => {
-            if (myPeer && !myPeer.destroyed) myPeer.destroy();
-            connectPeerJS();
-          }, 3000);
-        } else {
-          handlePeerError(err2);
-        }
-      });
+      joinAsRegularPeer();
     } else {
       handlePeerError(err);
     }
@@ -443,6 +513,20 @@ function setupDataConn(conn, isInitiator) {
     // Initiator volá v connectToPeer, receiver odpovídá v myPeer.on('call').
 
     if (isHost) {
+      // Zkontroluj limit místnosti (platí jen pro ne-overlay peery)
+      const limit = ROOM_LIMITS[ROOM_ID];
+      if (limit && peerName !== '__overlay__') {
+        // peers mapa v tuto chvíli obsahuje i nového peera → počítáme všechny reálné
+        const realCount = [...peers.values()].filter(e => !e.isOverlay).length;
+        // +1 za hosta (host není v peers mapě)
+        if (realCount + 1 > limit.maxPeers) {
+          console.log('[room] ⛔ Room full, kicking:', peerId);
+          conn.send({ type: 'room-full', max: limit.maxPeers });
+          setTimeout(() => { try { conn.close(); } catch {} removePeer(peerId); }, 300);
+          return;
+        }
+      }
+
       // Pošli novému peerovi seznam ostatních
       const peerList = [];
       peers.forEach((e, id) => {
@@ -580,6 +664,11 @@ function handleData(fromId, data) {
 
     case 'room-expired':
       alert('⏰ Platnost místnosti vypršela.');
+      window.location.href = 'index.html';
+      break;
+
+    case 'room-full':
+      alert(`⛔ Místnost je plná (max ${data.max} účastníků).`);
       window.location.href = 'index.html';
       break;
   }
