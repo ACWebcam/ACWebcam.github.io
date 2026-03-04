@@ -125,22 +125,26 @@ export function setupMediaConn(call) {
     console.log('[ICE] peerId:', peerId, '| state:', iceState);
 
     if (iceState === 'disconnected') {
-      console.log('[ICE] Disconnected, scheduling restart for', peerId);
+      // 'disconnected' can be transient — wait 4s before forcing a full re-call.
+      // NOTE: pc.restartIce() is a no-op with PeerJS (PeerJS doesn't intercept
+      // renegotiation signals from the underlying RTCPeerConnection), so we go
+      // straight to reconnectMedia() which creates a fresh PeerJS call.
+      console.log('[ICE] Disconnected, will reconnect in 4s if unresolved for', peerId);
       setTimeout(() => {
         const entry = peers.get(peerId);
-        if (entry?.mediaConn !== call) return;
+        if (entry?.mediaConn !== call) return; // already replaced by a newer call
         const pc = call.peerConnection;
-        if (pc && pc.signalingState !== 'closed' && pc.iceConnectionState !== 'connected') {
-          console.log('[ICE] Restarting ICE for', peerId);
-          pc.restartIce();
+        if (pc && pc.iceConnectionState !== 'connected' && pc.iceConnectionState !== 'completed') {
+          console.log('[ICE] Still disconnected after 4s, forcing reconnect for', peerId);
+          reconnectMedia(peerId);
         }
-      }, 2500);
+      }, 4000);
     } else if (iceState === 'failed') {
       showToast('⚠️ ICE failed – zkouším znovu spojení...');
       console.warn('[ICE] Failed for', peerId, '– renegotiating');
       setTimeout(() => {
         if (peers.get(peerId)?.mediaConn === call) reconnectMedia(peerId);
-      }, 3000);
+      }, 1000);
     } else if (iceState === 'connected' || iceState === 'completed') {
       console.log('[ICE] ✅ Connected to', peerId);
     }
@@ -164,9 +168,12 @@ export function reconnectMedia(peerId) {
   const entry = peers.get(peerId);
   if (!entry) return;
   if (entry.mediaConn) { try { entry.mediaConn.close(); } catch {} entry.mediaConn = null; }
-  // Only the lexicographically larger ID initiates — prevents double-call
-  if (state.myId > peerId) {
-    console.log('[room] Reconnecting media to', peerId);
+  // Overlays never initiate calls — always re-call them unconditionally.
+  // For room-to-room peers, only the lexicographically larger ID initiates
+  // to prevent both sides from calling each other simultaneously.
+  const isOverlay = entry.isOverlay;
+  if (isOverlay || state.myId > peerId) {
+    console.log('[room] Reconnecting media to', isOverlay ? 'overlay' : 'peer', peerId);
     const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
     if (call) setupMediaConn(call);
   }
