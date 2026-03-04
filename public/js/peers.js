@@ -18,12 +18,8 @@ export function connectToPeer(peerId, name) {
   console.log('[room] connectToPeer →', peerId, '| stream tracks:', state.localStream?.getTracks().length ?? 'no stream');
   const dataConn = state.myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
   setupDataConn(dataConn, true);
-  if (state.localStream?.getTracks().length > 0) {
-    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
-    if (call) setupMediaConn(call);
-  } else {
-    console.warn('[room] ⚠️ No local stream tracks — skipping media call to', peerId);
-  }
+  const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
+  if (call) setupMediaConn(call);
 }
 
 // ─── OVERLAYS ────────────────────────────────────────
@@ -71,18 +67,18 @@ export function setupDataConn(conn, isInitiator) {
     if (peerName === '__overlay__') {
       console.log('[room] Overlay detected:', peerId);
       entry.isOverlay = true;
-      if (state.localStream?.getTracks().length > 0 && !entry.mediaConn) {
+      if (!entry.mediaConn) {
         console.log('[room] Calling overlay with media now');
-        const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+        const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
         if (call) setupMediaConn(call);
       }
     } else {
-      // For regular peers — proactively call them so we don't rely solely on the
-      // joiner's call. Both sides calling each other is fine: the stale-call guard
-      // in setupMediaConn handles any duplicate, and the first ICE that connects wins.
-      if (state.localStream?.getTracks().length > 0 && !entry.mediaConn) {
+      // Create a placeholder tile immediately so the peer appears even before media arrives
+      setRemoteStream(peerId, new MediaStream());
+      // Proactively call — both sides call each other, stale-call guard ensures only one survives
+      if (!entry.mediaConn) {
         console.log('[room] Proactively calling peer with media:', peerId);
-        const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+        const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
         if (call) setupMediaConn(call);
       }
     }
@@ -180,7 +176,6 @@ export function setupMediaConn(call) {
 
 // ─── ICE RECONNECT ───────────────────────────────────
 export function reconnectMedia(peerId) {
-  if (!state.localStream?.getTracks().length) return;
   const entry = peers.get(peerId);
   if (!entry) return;
   // If data conn is gone the peer has left — just clean up.
@@ -195,7 +190,7 @@ export function reconnectMedia(peerId) {
   // The stale-call guard in setupMediaConn (entry.mediaConn !== call) ensures
   // only the call that connected last survives; the other's 'close' is ignored.
   console.log('[room] Reconnecting media to', peerId);
-  const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+  const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
   if (call) setupMediaConn(call);
 }
 
