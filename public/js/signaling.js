@@ -25,7 +25,7 @@ export function connectSignalingServer() {
       console.log('[room] ✅ Host claim potvrzen pro:', msg.room);
       state.isHost = true;
       showToast('✅ Místnost vytvořena');
-      setupPeerListeners();
+      // setupPeerListeners() was already called in myPeer.on('open')
     }
     if (msg.type === 'room-taken') {
       console.warn('[room] ⛔ Room code obsazen jiným hostem, připojuji jako peer...');
@@ -51,9 +51,12 @@ export function connectPeerJS() {
 
   state.myPeer.on('open', (id) => {
     state.myId = id;
+    // Set up peer listeners IMMEDIATELY so we never miss an incoming
+    // connection or call that arrives before the server round-trip finishes.
+    setupPeerListeners();
     console.log('[room] PeerJS host ID acquired:', id, '| claiming on server...');
     sigSend({ type: 'claim-host', room: ROOM_ID });
-    // isHost + setupPeerListeners() are triggered by 'host-claimed' WS message
+    // state.isHost is set when WS replies with 'host-claimed'
   });
 
   state.myPeer.on('error', (err) => {
