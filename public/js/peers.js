@@ -248,6 +248,11 @@ export function handleData(fromId, data) {
 export function handlePeerDisconnect(peerId) {
   removePeer(peerId);
   if (state.isHost) broadcastData({ type: 'peer-left', id: peerId }, peerId);
+  // If the host just left and we’re a regular peer, trigger migration
+
+  if (!state.isHost && peerId === 'studio-' + ROOM_ID) {
+    state.onHostLeft?.();
+  }
 }
 
 export function broadcastData(msg, excludeId) {

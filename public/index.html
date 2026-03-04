@@ -23,18 +23,6 @@
         <input type="text" id="userName" placeholder="Zadej jméno..." maxlength="30" />
       </div>
 
-      <div class="form-group">
-        <label>Doba platnosti místnosti</label>
-        <div class="form-row" style="gap:8px">
-          <input type="number" id="expiryValue" min="1" max="480" value="1" style="width:80px;text-align:center" />
-          <select id="expiryUnit" style="flex:1;padding:10px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.1);background:rgba(255,255,255,0.06);color:#fff;font-size:14px">
-            <option value="hours" selected>hodin</option>
-            <option value="days">dnů</option>
-          </select>
-        </div>
-        <small style="color:rgba(255,255,255,0.35);font-size:11px;margin-top:4px;display:block">Max 20 dnů (480 hodin)</small>
-      </div>
-
       <button class="btn btn-primary btn-full btn-lg" onclick="createRoom()">
         ✨ Vytvořit novou místnost
       </button>
@@ -54,6 +42,15 @@
   </div>
 
   <script>
+    // If the user refreshed or accidentally navigated away from a room,
+    // send them straight back without going through the form again.
+    (function() {
+      var last = localStorage.getItem('webrtc-last-room');
+      if (last && last.includes('room.html')) {
+        window.location.replace(last);
+      }
+    })();
+
     // Načti uloženou hodnotu jména
     const savedName = localStorage.getItem('webrtc-name');
     if (savedName) document.getElementById('userName').value = savedName;
@@ -75,28 +72,10 @@
       return name;
     }
 
-    // Clamp expiry to max 20 days
-    function getExpiryMinutes() {
-      const val  = Math.max(1, parseInt(document.getElementById('expiryValue').value) || 1);
-      const unit = document.getElementById('expiryUnit').value;
-      let minutes = unit === 'days' ? val * 24 * 60 : val * 60;
-      const max = 20 * 24 * 60; // 20 days in minutes
-      if (minutes > max) minutes = max;
-      return minutes;
-    }
-
-    // Adjust max on unit change
-    document.getElementById('expiryUnit').addEventListener('change', function() {
-      const inp = document.getElementById('expiryValue');
-      if (this.value === 'days') { inp.max = 20; if (parseInt(inp.value) > 20) inp.value = 20; }
-      else { inp.max = 480; }
-    });
-
     function createRoom() {
       const roomId = generateRoomId();
       const name = getName();
-      const expiry = getExpiryMinutes();
-      window.location.href = `room.html?room=${roomId}&name=${encodeURIComponent(name)}&expiry=${expiry}`;
+      window.location.href = `room.html?room=${roomId}&name=${encodeURIComponent(name)}`;
     }
 
     function joinRoom() {

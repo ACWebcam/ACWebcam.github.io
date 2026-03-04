@@ -20,7 +20,9 @@ Object.assign(window, {
 // ─── INIT ─────────────────────────────────────────────
 async function init() {
   if (OBS_MODE) document.body.classList.add('obs-mode');
-
+  // Remember this session so a refresh / accidental navigation back to index.html
+  // will automatically return the user to this room.
+  localStorage.setItem('webrtc-last-room', location.href);
   document.getElementById('displayRoomId').textContent = ROOM_ID;
   document.getElementById('roomLinkInput').value       = getRoomLink();
   document.getElementById('obsLinkInput').value        = getObsLink();

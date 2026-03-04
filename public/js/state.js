@@ -11,6 +11,7 @@ export const state = {
   audioMuted:      false,
   videoOff:        false,
   overlayBC:       null,   // BroadcastChannel for overlay sync
+  onHostLeft:      null,   // callback → set by signaling.js for host migration
 };
 
 // peerId -> { dataConn, mediaConn, isOverlay }

@@ -3,17 +3,15 @@ import { ROOM_ID, ROOM_EXPIRY, PERMANENT_ROOMS } from './config.js';
 let expiryInterval = null;
 
 export function handleRoomExpiry() {
-  // Permanent rooms never expire — clear any stale localStorage entry and bail
-  if (PERMANENT_ROOMS.has(ROOM_ID)) {
+  // Permanent rooms and rooms without ?expiry= param never expire
+  if (PERMANENT_ROOMS.has(ROOM_ID) || !ROOM_EXPIRY) {
     localStorage.removeItem('room-expiry-' + ROOM_ID);
     return;
   }
 
-  if (ROOM_EXPIRY) {
-    const existing = localStorage.getItem('room-expiry-' + ROOM_ID);
-    if (!existing) {
-      localStorage.setItem('room-expiry-' + ROOM_ID, String(Date.now() + ROOM_EXPIRY * 60 * 1000));
-    }
+  const existing = localStorage.getItem('room-expiry-' + ROOM_ID);
+  if (!existing) {
+    localStorage.setItem('room-expiry-' + ROOM_ID, String(Date.now() + ROOM_EXPIRY * 60 * 1000));
   }
   const stored = localStorage.getItem('room-expiry-' + ROOM_ID);
   if (!stored) return;

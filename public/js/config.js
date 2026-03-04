@@ -5,13 +5,6 @@ export const MY_NAME     = params.get('name') || localStorage.getItem('webrtc-na
 export const OBS_MODE    = params.get('obs') === '1';
 export const ROOM_EXPIRY = params.get('expiry') ? parseInt(params.get('expiry')) : null;
 
-// ─── SERVER URL ─────────────────────────────────────
-// When the page is served by the Node.js server (localhost or deployed render/railway/etc.)
-// leave this as location.origin — it will connect to the same host automatically.
-// If you somehow serve the frontend from a DIFFERENT host than the server, override here:
-//   export const SERVER_URL = 'https://your-server.onrender.com';
-export const SERVER_URL = location.origin;
-
 // ─── CONSTANTS ───────────────────────────────────────
 export const RES_MAP = {
   '360p':  { width: 640,  height: 360  },

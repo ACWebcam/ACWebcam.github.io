@@ -31,6 +31,7 @@ export function toggleSettings() {
 }
 
 export function leaveRoom() {
+  localStorage.removeItem('webrtc-last-room'); // clear session so index.html won't redirect back
   if (state.myPeer) state.myPeer.destroy();
   state.localStream?.getTracks().forEach(t => t.stop());
   window.location.href = 'index.html';

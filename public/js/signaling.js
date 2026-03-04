@@ -1,81 +1,31 @@
-import { ROOM_ID, ICE_CONFIG, SERVER_URL, getHostId } from './config.js';
+import { ROOM_ID, ICE_CONFIG, getHostId } from './config.js';
 import { state, peers } from './state.js';
 import { showToast } from './utils.js';
 import { setupPeerListeners, connectToPeer, sendStreamToOverlays, syncPeersToOverlays } from './peers.js';
 
-// ─── WEBSOCKET HOST-CLAIM ─────────────────────────────
-let sigWS      = null;
-let sigWSReady = false;
-const sigQueue = [];
-
-export function connectSignalingServer() {
-  const wsUrl = SERVER_URL.replace(/^https?/, p => p === 'https' ? 'wss' : 'ws');
-  sigWS = new WebSocket(wsUrl);
-
-  sigWS.addEventListener('open', () => {
-    sigWSReady = true;
-    while (sigQueue.length) sigWS.send(sigQueue.shift());
-  });
-
-  sigWS.addEventListener('message', (ev) => {
-    let msg;
-    try { msg = JSON.parse(ev.data); } catch { return; }
-
-    if (msg.type === 'host-claimed') {
-      console.log('[room] ✅ Host claim potvrzen pro:', msg.room);
-      state.isHost = true;
-      showToast('✅ Místnost vytvořena');
-      // setupPeerListeners() was already called in myPeer.on('open')
-      syncPeersToOverlays();
-      sendStreamToOverlays();
-    }
-    if (msg.type === 'room-taken') {
-      console.warn('[room] ⛔ Room code obsazen jiným hostem, připojuji jako peer...');
-      showToast('⏳ Připojování k existující místnosti...');
-      if (state.myPeer && !state.myPeer.destroyed) state.myPeer.destroy();
-      joinAsRegularPeer();
-    }
-  });
-
-  sigWS.addEventListener('error', () => {
-    console.warn('[room] Signaling WebSocket failed — host-claim přebere timeout fallback.');
-  });
-}
-
-export function sigSend(msg) {
-  const str = JSON.stringify(msg);
-  if (sigWSReady && sigWS?.readyState === WebSocket.OPEN) sigWS.send(str);
-  else sigQueue.push(str);
-}
-
-// ─── PEERJS BOOTSTRAP ────────────────────────────────
+// ─── BOOTSTRAP ───────────────────────────────────────
+// Try to claim studio-ROOMID as host.
+// If the ID is taken, fall back to joinAsRegularPeer().
 export function connectPeerJS() {
+  // Register host-migration callback so peers.js can trigger it without a circular import
+  state.onHostLeft = promoteToHost;
+
   const hostId = getHostId();
   state.myPeer = new Peer(hostId, { debug: 0, config: ICE_CONFIG });
 
   state.myPeer.on('open', (id) => {
-    state.myId = id;
-    // Set up peer listeners IMMEDIATELY so we never miss an incoming
-    // connection or call that arrives before the server round-trip finishes.
+    state.myId   = id;
+    state.isHost = true;
+    console.log('[room] ⭐ Jsi host:', id);
+    showToast('✅ Místnost vytvořena');
     setupPeerListeners();
-    console.log('[room] PeerJS host ID acquired:', id, '| claiming on server...');
-    sigSend({ type: 'claim-host', room: ROOM_ID });
-    // Fallback: if WS is unreachable / slow, assume host after 3s.
-    // PeerJS broker already guarantees we hold the unique host ID at this point.
-    setTimeout(() => {
-      if (!state.isHost) {
-        console.warn('[room] WS claim timeout — assuming host role (WS unreachable?)');
-        state.isHost = true;
-        showToast('✅ Místnost vytvořena (offline režim)');
-        syncPeersToOverlays();
-        sendStreamToOverlays();
-      }
-    }, 3000);
+    syncPeersToOverlays();
+    sendStreamToOverlays();
   });
 
   state.myPeer.on('error', (err) => {
     if (err.type === 'unavailable-id') {
-      // PeerJS host ID already taken — join as regular peer
+      // Someone else already holds the host ID — join as regular peer.
       state.myPeer.destroy();
       joinAsRegularPeer();
     } else {
@@ -84,6 +34,7 @@ export function connectPeerJS() {
   });
 }
 
+// ─── JOIN AS REGULAR PEER ────────────────────────────
 export function joinAsRegularPeer() {
   const hostId = getHostId();
   state.myPeer = new Peer(undefined, { debug: 0, config: ICE_CONFIG });
@@ -91,46 +42,59 @@ export function joinAsRegularPeer() {
   state.myPeer.on('open', (id) => {
     state.myId   = id;
     state.isHost = false;
-    console.log('✅ Joined as peer:', id);
+    console.log('[room] ✅ Joined as peer:', id);
     setupPeerListeners();
     connectToPeer(hostId, 'Host');
   });
 
   state.myPeer.on('error', (err) => {
     if (err.type === 'peer-unavailable') {
-      // host ID is not on the PeerJS broker at all.
-      console.warn('[room] Host not found on broker, retrying in 3s...');
-      showToast('⏳ Připojování k místnosti...');
+      // Host ID not on broker — host may have just left.
+      // Wait briefly then try to become host ourselves.
+      console.warn('[room] Host not found, attempting takeover in 2s...');
+      showToast('⏳ Připojování...');
       setTimeout(() => {
         if (state.myPeer && !state.myPeer.destroyed) {
-          if (peers.size === 0) {
-            // No connections at all — destroy and try to claim host role ourselves.
-            console.log('[room] No peers, attempting to become host...');
-            state.myPeer.destroy();
-            // Clear stale peers map so connectToPeer won’t skip the host on next attempt
-            peers.clear();
-            connectPeerJS();
-          } else {
-            // Already have some connections (e.g. overlay) — just retry host conn.
-            console.log('[room] Have peers, retrying host connection...');
-            connectToPeer(hostId, 'Host');
-          }
+          state.myPeer.destroy();
+          peers.clear();
+          connectPeerJS();
         }
-      }, 3000);
+      }, 2000 + Math.random() * 1000); // jitter so multiple peers don’t all grab at once
     } else {
       handlePeerError(err);
     }
   });
 }
 
+// ─── HOST MIGRATION ───────────────────────────────────
+// Called when the current host peer disconnects.
+// Destroy our current peer connection and race to claim studio-ROOMID.
+// Only one peer wins; the rest fall back to joinAsRegularPeer() automatically.
+export function promoteToHost() {
+  if (state.isHost) return; // we are already host
+  console.log('[room] 👑 Host odešel — pokus o převzetí role hosta...');
+  showToast('⏳ Host odešel, přebírám místnost...');
+  // Small random delay so multiple remaining peers don’t all try at the exact same ms
+  setTimeout(() => {
+    if (state.myPeer && !state.myPeer.destroyed) {
+      state.myPeer.destroy();
+      peers.clear();
+    }
+    connectPeerJS();
+  }, Math.random() * 800);
+}
+
+// ─── ERROR HANDLER ────────────────────────────────────
 function handlePeerError(err) {
-  console.error('PeerJS error:', err.type, err.message);
-  if (err.type === 'peer-unavailable') {
-    // Only show this toast when joining (peer = host that doesn't exist).
-    // In host context this fires when reconnecting to a stale peer that already left.
-    if (!state.isHost) showToast('⚠️ Místnost neexistuje nebo host odešel');
-  } else if (err.type === 'disconnected' || err.type === 'network') {
+  console.error('[room] PeerJS error:', err.type, err.message);
+  if (err.type === 'disconnected' || err.type === 'network') {
     showToast('⚠️ Spojení ztraceno, obnovuji...');
     setTimeout(() => { if (state.myPeer && !state.myPeer.destroyed) state.myPeer.reconnect(); }, 2000);
   }
+}
+
+// Keep connectSignalingServer as a no-op so main.js import still works
+export function connectSignalingServer() {}
+export function sigSend() {}
+
 }
