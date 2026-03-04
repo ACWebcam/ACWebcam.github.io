@@ -36,6 +36,22 @@ export function sendStreamToOverlays() {
   });
 }
 
+// Called when host role is confirmed (WS or fallback).
+// Re-sends the full peer list to any overlays that connected
+// before isHost was true and therefore got an empty list.
+export function syncPeersToOverlays() {
+  peers.forEach((overlayEntry, overlayId) => {
+    if (!overlayEntry.isOverlay || !overlayEntry.dataConn?.open) return;
+    const peerList = [];
+    peers.forEach((e, id) => {
+      if (id !== overlayId && !e.isOverlay)
+        peerList.push({ id, name: peerNames.get(id) || id });
+    });
+    console.log('[room] syncPeersToOverlays → sending', peerList.length, 'peers to overlay', overlayId);
+    overlayEntry.dataConn.send({ type: 'peers', peers: peerList });
+  });
+}
+
 // ─── DATA CONNECTION ─────────────────────────────────
 export function setupDataConn(conn, isInitiator) {
   const peerId = conn.peer;

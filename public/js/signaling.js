@@ -1,7 +1,7 @@
 import { ROOM_ID, ICE_CONFIG, SERVER_URL, getHostId } from './config.js';
 import { state } from './state.js';
 import { showToast } from './utils.js';
-import { setupPeerListeners, connectToPeer } from './peers.js';
+import { setupPeerListeners, connectToPeer, sendStreamToOverlays, syncPeersToOverlays } from './peers.js';
 
 // ─── WEBSOCKET HOST-CLAIM ─────────────────────────────
 let sigWS      = null;
@@ -26,6 +26,8 @@ export function connectSignalingServer() {
       state.isHost = true;
       showToast('✅ Místnost vytvořena');
       // setupPeerListeners() was already called in myPeer.on('open')
+      syncPeersToOverlays();
+      sendStreamToOverlays();
     }
     if (msg.type === 'room-taken') {
       console.warn('[room] ⛔ Room code obsazen jiným hostem, připojuji jako peer...');
@@ -35,7 +37,9 @@ export function connectSignalingServer() {
     }
   });
 
-  sigWS.addEventListener('error', () => {});
+  sigWS.addEventListener('error', () => {
+    console.warn('[room] Signaling WebSocket failed — host-claim přebere timeout fallback.');
+  });
 }
 
 export function sigSend(msg) {
@@ -56,7 +60,17 @@ export function connectPeerJS() {
     setupPeerListeners();
     console.log('[room] PeerJS host ID acquired:', id, '| claiming on server...');
     sigSend({ type: 'claim-host', room: ROOM_ID });
-    // state.isHost is set when WS replies with 'host-claimed'
+    // Fallback: if WS is unreachable / slow, assume host after 3s.
+    // PeerJS broker already guarantees we hold the unique host ID at this point.
+    setTimeout(() => {
+      if (!state.isHost) {
+        console.warn('[room] WS claim timeout — assuming host role (WS unreachable?)');
+        state.isHost = true;
+        showToast('✅ Místnost vytvořena (offline režim)');
+        syncPeersToOverlays();
+        sendStreamToOverlays();
+      }
+    }, 3000);
   });
 
   state.myPeer.on('error', (err) => {
