@@ -114,6 +114,7 @@ export function setupDataConn(conn, isInitiator) {
 // ─── MEDIA CONNECTION ────────────────────────────────
 export function setupMediaConn(call) {
   const peerId = call.peer;
+  let everConnected = false; // track whether ICE ever reached 'connected'
 
   call.on('stream', (remoteStream) => {
     const name = call.metadata?.name || peerNames.get(peerId) || peerId;
@@ -124,25 +125,38 @@ export function setupMediaConn(call) {
   call.on('iceStateChanged', (iceState) => {
     console.log('[ICE] peerId:', peerId, '| state:', iceState);
 
-    if (iceState === 'disconnected') {
-      console.log('[ICE] Disconnected, scheduling restart for', peerId);
-      setTimeout(() => {
-        const entry = peers.get(peerId);
-        if (entry?.mediaConn !== call) return;
-        const pc = call.peerConnection;
-        if (pc && pc.signalingState !== 'closed' && pc.iceConnectionState !== 'connected') {
-          console.log('[ICE] Restarting ICE for', peerId);
-          pc.restartIce();
-        }
-      }, 2500);
+    if (iceState === 'connected' || iceState === 'completed') {
+      everConnected = true;
+      console.log('[ICE] ✅ Connected to', peerId);
+    } else if (iceState === 'disconnected') {
+      if (!everConnected) {
+        // Never reached connected — restartIce() is useless, recreate the call entirely
+        console.warn('[ICE] Never connected before disconnect for', peerId, '— full reconnect');
+        setTimeout(() => {
+          if (peers.get(peerId)?.mediaConn === call) {
+            showToast('⚠️ Spojení selhalo, znovu zkouším...');
+            reconnectMedia(peerId);
+          }
+        }, 1500);
+      } else {
+        // Was connected before — try ICE restart first
+        console.log('[ICE] Disconnected (was connected), scheduling restart for', peerId);
+        setTimeout(() => {
+          const entry = peers.get(peerId);
+          if (entry?.mediaConn !== call) return;
+          const pc = call.peerConnection;
+          if (pc && pc.signalingState !== 'closed' && pc.iceConnectionState !== 'connected') {
+            console.log('[ICE] Restarting ICE for', peerId);
+            pc.restartIce();
+          }
+        }, 2500);
+      }
     } else if (iceState === 'failed') {
       showToast('⚠️ ICE failed – zkouším znovu spojení...');
       console.warn('[ICE] Failed for', peerId, '– renegotiating');
       setTimeout(() => {
         if (peers.get(peerId)?.mediaConn === call) reconnectMedia(peerId);
-      }, 3000);
-    } else if (iceState === 'connected' || iceState === 'completed') {
-      console.log('[ICE] ✅ Connected to', peerId);
+      }, 2000);
     }
   });
 
@@ -163,13 +177,13 @@ export function reconnectMedia(peerId) {
   if (!state.localStream?.getTracks().length) return;
   const entry = peers.get(peerId);
   if (!entry) return;
+  // Close the stale call
   if (entry.mediaConn) { try { entry.mediaConn.close(); } catch {} entry.mediaConn = null; }
-  // Only the lexicographically larger ID initiates — prevents double-call
-  if (state.myId > peerId) {
-    console.log('[room] Reconnecting media to', peerId);
-    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
-    if (call) setupMediaConn(call);
-  }
+  // Both sides attempt — whoever creates a new call first wins;
+  // the stale-call guard in setupMediaConn ensures the second one is ignored.
+  console.log('[room] Reconnecting media to', peerId);
+  const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+  if (call) setupMediaConn(call);
 }
 
 // ─── DATA HANDLING ───────────────────────────────────
