@@ -1,4 +1,4 @@
-import { ROOM_ID, ICE_CONFIG, getHostId } from './config.js';
+import { ROOM_ID, ICE_CONFIG, SERVER_URL, getHostId } from './config.js';
 import { state } from './state.js';
 import { showToast } from './utils.js';
 import { setupPeerListeners, connectToPeer } from './peers.js';
@@ -9,7 +9,7 @@ let sigWSReady = false;
 const sigQueue = [];
 
 export function connectSignalingServer() {
-  const wsUrl = location.origin.replace(/^https?/, p => p === 'https' ? 'wss' : 'ws');
+  const wsUrl = SERVER_URL.replace(/^https?/, p => p === 'https' ? 'wss' : 'ws');
   sigWS = new WebSocket(wsUrl);
 
   sigWS.addEventListener('open', () => {

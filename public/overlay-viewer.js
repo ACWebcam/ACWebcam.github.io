@@ -183,7 +183,11 @@ if (!ROOM_ID) {
     vid.classList.add('active');
     if (ph) ph.style.display = 'none';
     // Explicitní play pro jistotu
-    vid.play().catch(function(e) { console.warn('[overlay] Play error cam', slot, e); });
+    vid.play().catch(function(e) {
+      // AbortError is benign — happens when srcObject is updated while play() is still
+      // pending (autoplay handles resuming the new stream automatically).
+      if (e.name !== 'AbortError') console.warn('[overlay] Play error cam', slot, e);
+    });
     console.log('[overlay] Stream assigned to slot', slot);
   }
 
