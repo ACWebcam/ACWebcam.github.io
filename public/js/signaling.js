@@ -1,5 +1,5 @@
 import { ROOM_ID, ICE_CONFIG, SERVER_URL, getHostId } from './config.js';
-import { state } from './state.js';
+import { state, peers } from './state.js';
 import { showToast } from './utils.js';
 import { setupPeerListeners, connectToPeer, sendStreamToOverlays, syncPeersToOverlays } from './peers.js';
 
@@ -98,15 +98,21 @@ export function joinAsRegularPeer() {
 
   state.myPeer.on('error', (err) => {
     if (err.type === 'peer-unavailable') {
-      // Host not reachable right now (initial join OR reconnectMedia failed).
-      // DO NOT destroy the peer — we may already have other connections open.
-      // Just retry connecting to host after a short delay.
-      console.warn('[room] Peer unavailable, retrying in 3s...');
+      // host ID is not on the PeerJS broker at all.
+      console.warn('[room] Host not found on broker, retrying in 3s...');
       showToast('⏳ Připojování k místnosti...');
       setTimeout(() => {
-        if (state.myPeer && !state.myPeer.destroyed && !peers.has(hostId)) {
-          console.log('[room] Retrying connection to host...');
-          connectToPeer(hostId, 'Host');
+        if (state.myPeer && !state.myPeer.destroyed) {
+          if (peers.size === 0) {
+            // No connections at all — destroy and try to claim host role ourselves.
+            console.log('[room] No peers, attempting to become host...');
+            state.myPeer.destroy();
+            connectPeerJS();
+          } else {
+            // Already have some connections (e.g. overlay) — just retry host conn.
+            console.log('[room] Have peers, retrying host connection...');
+            connectToPeer(hostId, 'Host');
+          }
         }
       }, 3000);
     } else {
