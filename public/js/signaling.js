@@ -124,7 +124,9 @@ export function joinAsRegularPeer() {
 function handlePeerError(err) {
   console.error('PeerJS error:', err.type, err.message);
   if (err.type === 'peer-unavailable') {
-    showToast('⚠️ Místnost neexistuje nebo host odešel');
+    // Only show this toast when joining (peer = host that doesn't exist).
+    // In host context this fires when reconnecting to a stale peer that already left.
+    if (!state.isHost) showToast('⚠️ Místnost neexistuje nebo host odešel');
   } else if (err.type === 'disconnected' || err.type === 'network') {
     showToast('⚠️ Spojení ztraceno, obnovuji...');
     setTimeout(() => { if (state.myPeer && !state.myPeer.destroyed) state.myPeer.reconnect(); }, 2000);

@@ -7,8 +7,7 @@ import { startExpiryCountdown } from './expiry.js';
 // ─── LISTENERS ───────────────────────────────────────
 export function setupPeerListeners() {
   state.myPeer.on('connection', (conn) => setupDataConn(conn, false));
-  state.myPeer.on('call', (call) => {
-    call.answer(state.localStream || new MediaStream());
+  state.myPeer.on('call', (call) => {    console.log('[room] 📞 Incoming media call from', call.peer);    call.answer(state.localStream || new MediaStream());
     setupMediaConn(call);
   });
 }
@@ -181,6 +180,13 @@ export function reconnectMedia(peerId) {
   if (!state.localStream?.getTracks().length) return;
   const entry = peers.get(peerId);
   if (!entry) return;
+  // If data conn is gone the peer has left — don’t attempt a call that will
+  // trigger a spurious peer-unavailable error. Just clean up.
+  if (!entry.dataConn?.open) {
+    console.log('[room] Data conn gone for', peerId, '— removing stale peer');
+    removePeer(peerId);
+    return;
+  }
   // Close the stale call
   if (entry.mediaConn) { try { entry.mediaConn.close(); } catch {} entry.mediaConn = null; }
   // Only the lexicographically larger ID initiates to prevent both sides
