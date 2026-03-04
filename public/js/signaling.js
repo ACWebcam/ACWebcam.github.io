@@ -96,5 +96,3 @@ function handlePeerError(err) {
 // Keep connectSignalingServer as a no-op so main.js import still works
 export function connectSignalingServer() {}
 export function sigSend() {}
-
-}

@@ -145,34 +145,24 @@ export function setupMediaConn(call) {
       everConnected = true;
       console.log('[ICE] ✅ Connected to', peerId);
     } else if (iceState === 'disconnected') {
-      if (!everConnected) {
-        // Never reached connected — restartIce() is useless, recreate the call entirely
-        console.warn('[ICE] Never connected before disconnect for', peerId, '— full reconnect');
-        setTimeout(() => {
-          if (peers.get(peerId)?.mediaConn === call) {
-            showToast('⚠️ Spojení selhalo, znovu zkouším...');
-            reconnectMedia(peerId);
-          }
-        }, 1500);
-      } else {
-        // Was connected before — try ICE restart first
-        console.log('[ICE] Disconnected (was connected), scheduling restart for', peerId);
-        setTimeout(() => {
-          const entry = peers.get(peerId);
-          if (entry?.mediaConn !== call) return;
-          const pc = call.peerConnection;
-          if (pc && pc.signalingState !== 'closed' && pc.iceConnectionState !== 'connected') {
-            console.log('[ICE] Restarting ICE for', peerId);
-            pc.restartIce();
-          }
-        }, 2500);
-      }
-    } else if (iceState === 'failed') {
-      showToast('⚠️ ICE failed – zkouším znovu spojení...');
-      console.warn('[ICE] Failed for', peerId, '– renegotiating');
+      // Give the connection a chance to recover on its own.
+      // If it's still disconnected after the timeout, remove the peer immediately.
+      const delay = everConnected ? 4000 : 1500;
+      console.warn('[ICE] Disconnected from', peerId, '(everConnected:', everConnected, ') — removing in', delay, 'ms if not recovered');
       setTimeout(() => {
-        if (peers.get(peerId)?.mediaConn === call) reconnectMedia(peerId);
-      }, 2000);
+        const entry = peers.get(peerId);
+        if (!entry || entry.mediaConn !== call) return; // already handled
+        const iceNow = call.peerConnection?.iceConnectionState;
+        if (iceNow === 'disconnected' || iceNow === 'failed' || iceNow === 'closed') {
+          console.warn('[ICE] Still disconnected — removing peer', peerId);
+          handlePeerDisconnect(peerId);
+        }
+      }, delay);
+    } else if (iceState === 'failed') {
+      console.warn('[ICE] Failed for', peerId, '— removing peer immediately');
+      setTimeout(() => {
+        if (peers.get(peerId)?.mediaConn === call) handlePeerDisconnect(peerId);
+      }, 500);
     }
   });
 
