@@ -59,17 +59,6 @@ export const ICE_CONFIG = {
       ],
       username: 'free',
       credential: 'free'
-    },
-    // Metered.ca global relay — more reliable than openrelay under load
-    {
-      urls: [
-        'turn:global.relay.metered.ca:80',
-        'turn:global.relay.metered.ca:443',
-        'turn:global.relay.metered.ca:443?transport=tcp',
-        'turns:global.relay.metered.ca:443'
-      ],
-      username: 'e499486ca9b61d8a7b93cfa9',
-      credential: 'PGqJY+7aamlMDW2u'
     }
   ],
   iceCandidatePoolSize: 10

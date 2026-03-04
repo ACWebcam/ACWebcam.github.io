@@ -16,11 +16,14 @@ export function setupPeerListeners() {
 // ─── CONNECT TO PEER ─────────────────────────────────
 export function connectToPeer(peerId, name) {
   if (peers.has(peerId) || peerId === state.myId) return;
+  console.log('[room] connectToPeer →', peerId, '| stream tracks:', state.localStream?.getTracks().length ?? 'no stream');
   const dataConn = state.myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
   setupDataConn(dataConn, true);
   if (state.localStream?.getTracks().length > 0) {
     const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
     if (call) setupMediaConn(call);
+  } else {
+    console.warn('[room] ⚠️ No local stream tracks — skipping media call to', peerId);
   }
 }
 
@@ -64,6 +67,7 @@ export function setupDataConn(conn, isInitiator) {
 
     const peerName = conn.metadata?.name || peerNames.get(peerId) || peerId;
     setPeerName(peerId, peerName);
+    console.log('[room] Data conn OPEN with', peerId, '| name:', peerName, '| isHost:', state.isHost);
 
     if (peerName === '__overlay__') {
       console.log('[room] Overlay detected:', peerId);
