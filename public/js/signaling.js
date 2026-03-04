@@ -107,6 +107,8 @@ export function joinAsRegularPeer() {
             // No connections at all — destroy and try to claim host role ourselves.
             console.log('[room] No peers, attempting to become host...');
             state.myPeer.destroy();
+            // Clear stale peers map so connectToPeer won’t skip the host on next attempt
+            peers.clear();
             connectPeerJS();
           } else {
             // Already have some connections (e.g. overlay) — just retry host conn.

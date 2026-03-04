@@ -76,6 +76,15 @@ export function setupDataConn(conn, isInitiator) {
         const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
         if (call) setupMediaConn(call);
       }
+    } else {
+      // For regular peers — proactively call them so we don't rely solely on the
+      // joiner's call. Both sides calling each other is fine: the stale-call guard
+      // in setupMediaConn handles any duplicate, and the first ICE that connects wins.
+      if (state.localStream?.getTracks().length > 0 && !entry.mediaConn) {
+        console.log('[room] Proactively calling peer with media:', peerId);
+        const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+        if (call) setupMediaConn(call);
+      }
     }
 
     if (state.isHost) {
@@ -180,8 +189,7 @@ export function reconnectMedia(peerId) {
   if (!state.localStream?.getTracks().length) return;
   const entry = peers.get(peerId);
   if (!entry) return;
-  // If data conn is gone the peer has left — don’t attempt a call that will
-  // trigger a spurious peer-unavailable error. Just clean up.
+  // If data conn is gone the peer has left — just clean up.
   if (!entry.dataConn?.open) {
     console.log('[room] Data conn gone for', peerId, '— removing stale peer');
     removePeer(peerId);
@@ -189,15 +197,12 @@ export function reconnectMedia(peerId) {
   }
   // Close the stale call
   if (entry.mediaConn) { try { entry.mediaConn.close(); } catch {} entry.mediaConn = null; }
-  // Only the lexicographically larger ID initiates to prevent both sides
-  // calling each other simultaneously, which causes ICE candidate confusion.
-  if (state.myId > peerId) {
-    console.log('[room] Reconnecting media to', peerId);
-    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
-    if (call) setupMediaConn(call);
-  } else {
-    console.log('[room] Waiting for', peerId, 'to initiate reconnect (lower ID)');
-  }
+  // BOTH sides call each other — no lexicographic guard.
+  // The stale-call guard in setupMediaConn (entry.mediaConn !== call) ensures
+  // only the call that connected last survives; the other's 'close' is ignored.
+  console.log('[room] Reconnecting media to', peerId);
+  const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+  if (call) setupMediaConn(call);
 }
 
 // ─── DATA HANDLING ───────────────────────────────────
