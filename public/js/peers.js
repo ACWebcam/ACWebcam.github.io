@@ -15,15 +15,17 @@ export function setupPeerListeners() {
 // ─── CONNECT TO PEER ─────────────────────────────────
 export function connectToPeer(peerId, name) {
   if (peers.has(peerId) || peerId === state.myId) return;
-  const myTracks = state.localStream?.getTracks().length ?? 0;
-  console.log('[room] connectToPeer →', peerId, '| my stream tracks:', myTracks);
+  console.log('[room] connectToPeer →', peerId, '| my stream tracks:', state.localStream?.getTracks().length ?? 0);
   const dataConn = state.myPeer.connect(peerId, { reliable: true, metadata: { name: MY_NAME } });
   setupDataConn(dataConn, true);
-  // Only call if we have real tracks — otherwise wait for the other side to call us.
-  // This avoids a race where an empty-stream call from us clobbers their real-stream call.
-  if (myTracks > 0) {
-    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+  // Lexicographic tie-break: the smaller ID initiates the media call.
+  // This ensures exactly one side calls, preventing glare (simultaneous offers).
+  if (state.myId < peerId) {
+    console.log('[room] I am caller (smaller ID) →', peerId);
+    const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
     if (call) setupMediaConn(call);
+  } else {
+    console.log('[room] I am callee (larger ID), waiting for call from', peerId);
   }
 }
 
@@ -80,12 +82,14 @@ export function setupDataConn(conn, isInitiator) {
     } else {
       // Create a placeholder tile immediately so the peer appears even before media arrives
       setRemoteStream(peerId, new MediaStream());
-      // Only proactively call if we have real tracks.
-      // If we have no camera, wait — the peer (who has video) will call us.
-      if (!entry.mediaConn && (state.localStream?.getTracks().length ?? 0) > 0) {
-        console.log('[room] Proactively calling peer with media:', peerId);
-        const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+      // Lexicographic tie-break: only call if my ID is smaller.
+      // If my ID is larger I wait — the other side will call me.
+      if (!entry.mediaConn && state.myId < peerId) {
+        console.log('[room] Data open: I am caller (smaller ID) →', peerId);
+        const call = state.myPeer.call(peerId, state.localStream || new MediaStream(), { metadata: { name: MY_NAME } });
         if (call) setupMediaConn(call);
+      } else if (state.myId >= peerId) {
+        console.log('[room] Data open: I am callee (larger ID), waiting for call from', peerId);
       }
     }
 
