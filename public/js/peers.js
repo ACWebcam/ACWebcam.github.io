@@ -101,10 +101,11 @@ export function setupDataConn(conn, isInitiator) {
         }
       }
 
-      // Send existing peer list
+      // Send existing peer list — overlays only need real (non-overlay) peers
       const peerList = [];
       peers.forEach((e, id) => {
-        if (id !== peerId && id !== state.myId) peerList.push({ id, name: peerNames.get(id) || id });
+        if (id !== peerId && id !== state.myId && !e.isOverlay)
+          peerList.push({ id, name: peerNames.get(id) || id });
       });
       conn.send({ type: 'peers', peers: peerList });
 
@@ -112,7 +113,10 @@ export function setupDataConn(conn, isInitiator) {
       const stored = localStorage.getItem('room-expiry-' + ROOM_ID);
       if (stored) conn.send({ type: 'room-info', expiresAt: parseInt(stored) });
 
-      broadcastData({ type: 'peer-joined', id: peerId, name: peerName }, peerId);
+      // Don't announce overlay joins to other overlays — they'd try to connect
+      // to each other, wasting their 2 display slots.
+      if (peerName !== '__overlay__')
+        broadcastData({ type: 'peer-joined', id: peerId, name: peerName }, peerId);
     }
 
     updatePeerCount();
