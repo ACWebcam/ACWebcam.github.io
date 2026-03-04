@@ -98,12 +98,16 @@ export function joinAsRegularPeer() {
 
   state.myPeer.on('error', (err) => {
     if (err.type === 'peer-unavailable') {
-      // Host not found yet — retry full reconnect in 3s
-      console.warn('[room] Host not found, retrying in 3s...');
+      // Host not reachable right now (initial join OR reconnectMedia failed).
+      // DO NOT destroy the peer — we may already have other connections open.
+      // Just retry connecting to host after a short delay.
+      console.warn('[room] Peer unavailable, retrying in 3s...');
       showToast('⏳ Připojování k místnosti...');
       setTimeout(() => {
-        if (state.myPeer && !state.myPeer.destroyed) state.myPeer.destroy();
-        connectPeerJS();
+        if (state.myPeer && !state.myPeer.destroyed && !peers.has(hostId)) {
+          console.log('[room] Retrying connection to host...');
+          connectToPeer(hostId, 'Host');
+        }
       }, 3000);
     } else {
       handlePeerError(err);

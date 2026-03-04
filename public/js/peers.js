@@ -179,11 +179,15 @@ export function reconnectMedia(peerId) {
   if (!entry) return;
   // Close the stale call
   if (entry.mediaConn) { try { entry.mediaConn.close(); } catch {} entry.mediaConn = null; }
-  // Both sides attempt — whoever creates a new call first wins;
-  // the stale-call guard in setupMediaConn ensures the second one is ignored.
-  console.log('[room] Reconnecting media to', peerId);
-  const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
-  if (call) setupMediaConn(call);
+  // Only the lexicographically larger ID initiates to prevent both sides
+  // calling each other simultaneously, which causes ICE candidate confusion.
+  if (state.myId > peerId) {
+    console.log('[room] Reconnecting media to', peerId);
+    const call = state.myPeer.call(peerId, state.localStream, { metadata: { name: MY_NAME } });
+    if (call) setupMediaConn(call);
+  } else {
+    console.log('[room] Waiting for', peerId, 'to initiate reconnect (lower ID)');
+  }
 }
 
 // ─── DATA HANDLING ───────────────────────────────────
